@@ -14,7 +14,8 @@ Commands:
   init         Setup Kaggle upload folders/metadata for selected artifacts (no git required)
   gen          Generate gen-full-repo.py + setup upload folders (requires git)
   build-wheel  Build/update wheelhouse.zip only
-  upload       Upload changed artifact datasets to Kaggle
+  kaggle       Kaggle helpers (login/upload)
+  upload       Deprecated alias for: syk4y kaggle upload
   doctor       Check environment and repository readiness
   help         Show this help
 
@@ -65,8 +66,11 @@ case "$command" in
   build-wheel)
     exec "$SCRIPT_DIR/syk4y-build-wheel" --repo-root "$repo_root" "$@"
     ;;
+  kaggle)
+    exec "$SCRIPT_DIR/syk4y-kaggle" --repo-root "$repo_root" "$@"
+    ;;
   upload)
-    exec "$SCRIPT_DIR/syk4y-upload" --repo-root "$repo_root" "$@"
+    exec "$SCRIPT_DIR/syk4y-kaggle" --repo-root "$repo_root" upload "$@"
     ;;
   doctor)
     exec "$SCRIPT_DIR/syk4y-doctor" --repo-root "$repo_root" "$@"

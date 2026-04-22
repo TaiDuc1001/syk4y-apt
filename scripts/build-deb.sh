@@ -66,6 +66,7 @@ REQUIRED_SCRIPTS=(
   syk4y-init
   syk4y-gen
   syk4y-build-wheel
+  syk4y-kaggle
   syk4y-upload
   syk4y-doctor
   syk4y-gen-scaffold
@@ -111,6 +112,7 @@ make_wrapper "syk4y" "syk4y-main"
 make_wrapper "syk4y-init" "syk4y-init"
 make_wrapper "syk4y-gen" "syk4y-gen"
 make_wrapper "syk4y-build-wheel" "syk4y-build-wheel"
+make_wrapper "syk4y-kaggle" "syk4y-kaggle"
 make_wrapper "syk4y-upload" "syk4y-upload"
 make_wrapper "syk4y-doctor" "syk4y-doctor"
 make_wrapper "make-gen-full-repo.sh" "syk4y-gen-scaffold"

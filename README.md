@@ -23,7 +23,8 @@ sudo apt install syk4y
 syk4y init <artifact...>
 syk4y gen
 syk4y build-wheel
-syk4y upload
+syk4y kaggle login
+syk4y kaggle upload
 syk4y doctor
 ```
 
