@@ -252,13 +252,7 @@ else
   WHEELHOUSE_ABS="$WHEELHOUSE_DATASET_DIR/$WHEELHOUSE_FILE"
 fi
 
-echo "[syk4y:init] Repo root: $REPO_ROOT"
-echo "[syk4y:init] Selected artifacts: ${SELECTED_ARTIFACTS[*]}"
-
-if [[ "$SKIP_GEN" -eq 1 ]]; then
-  echo "[1/3] Snapshot script: skipped (--skip-gen)"
-else
-  echo "[1/3] Generating snapshot script: $OUT_ABS"
+if [[ "$SKIP_GEN" -eq 0 ]]; then
   python3 - "$REPO_ROOT" "$OUT_ABS" <<'PY'
 import base64
 import os
@@ -387,36 +381,37 @@ if out_abs.exists() and out_abs.is_file():
 
 if should_overwrite:
     os.replace(tmp_name, out_abs)
-    print(f"Generated: {out_abs}")
+    print(f"Snapshot script updated: {out_abs}")
 else:
     tmp_path.unlink()
-    print(f"Unchanged: {out_abs}")
+    print(f"Snapshot script unchanged: {out_abs}")
 
-print(f"Included regular files: {file_count}")
-print(f"Included symlinks: {link_count}")
+print(f"Snapshot entries: files={file_count}, symlinks={link_count}")
 if out_skip:
-    print(f"Excluded output script path from snapshot: {out_skip}")
+    print(f"Snapshot excluded output path: {out_skip}")
 PY
 fi
 
-echo "[2/3] Preparing Kaggle upload root: $UPLOAD_ROOT_ABS"
 mkdir -p "$UPLOAD_ROOT_ABS"
+echo "Initialized Kaggle upload scaffolding:"
+echo "  upload root: $UPLOAD_ROOT_ABS"
 
 # Clean legacy monolithic upload layout from older script versions.
 LEGACY_DATASET_DIR="$UPLOAD_ROOT_ABS/$REPO_SLUG"
 if [[ -d "$LEGACY_DATASET_DIR" ]]; then
-  echo "  - Removing legacy folder: $LEGACY_DATASET_DIR"
+  echo "  removed legacy folder: $LEGACY_DATASET_DIR"
   rm -rf "$LEGACY_DATASET_DIR"
 fi
 
-initialized_dirs=()
 for artifact in "${SELECTED_ARTIFACTS[@]}"; do
   artifact_slug="${REPO_SLUG}-${artifact}"
   artifact_dir="$UPLOAD_ROOT_ABS/$artifact_slug"
   metadata_path="$artifact_dir/dataset-metadata.json"
   dataset_id="${KAGGLE_USERNAME}/${artifact_slug}"
   mkdir -p "$artifact_dir"
-  initialized_dirs+=("$artifact_dir")
+  echo "  artifact: $artifact"
+  echo "    dataset id: $dataset_id"
+  echo "    dataset dir: $artifact_dir"
 
   # Clean stale generated entries from previous runs/layouts.
   rm -rf "$artifact_dir/checkpoints" "$artifact_dir/datasets" "$artifact_dir/models"
@@ -430,14 +425,14 @@ for artifact in "${SELECTED_ARTIFACTS[@]}"; do
     src="$REPO_ROOT/$artifact"
     dst="$artifact_dir/$artifact"
     if [[ ! -e "$src" ]]; then
-      echo "  - [$artifact] source missing: $src (skipped link)" >&2
+      echo "    link: skipped (missing source: $src)" >&2
       rm -f "$dst"
     else
       ln -sfn "$src" "$dst"
-      echo "  - [$artifact] linked: $dst -> $src"
+      echo "    link: $dst -> $src"
     fi
   else
-    echo "  - [wheelhouse] ready: $artifact_dir"
+    echo "    wheelhouse zip target: $WHEELHOUSE_ABS"
   fi
 
   python3 - "$metadata_path" "$REPO_NAME" "$KAGGLE_USERNAME" "$artifact_slug" "$artifact" <<'PY'
@@ -465,21 +460,10 @@ metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
 PY
 
   rm -f "$artifact_dir/upload-dataset.sh"
-  echo "  - [$artifact] metadata: $metadata_path (id: $dataset_id)"
+  echo "    metadata: $metadata_path"
 done
 
-echo "[3/3] Init complete"
-echo "Summary:"
-echo "  Upload root: $UPLOAD_ROOT_ABS"
-if [[ "$SKIP_GEN" -eq 1 ]]; then
-  echo "  Snapshot script: skipped"
-else
-  echo "  Snapshot script: $OUT_ABS"
+if [[ "$SKIP_GEN" -eq 0 ]]; then
+  echo "  snapshot script: $OUT_ABS"
 fi
-if [[ " ${SELECTED_ARTIFACTS[*]} " == *" wheelhouse "* ]]; then
-  echo "  Wheelhouse archive path: $WHEELHOUSE_ABS"
-fi
-echo "  Artifact dataset folders:"
-for dir in "${initialized_dirs[@]}"; do
-  echo "   - $dir"
-done
+echo "Done."
