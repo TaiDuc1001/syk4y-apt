@@ -62,15 +62,11 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 REQUIRED_SCRIPTS=(
-  syk4y-main
+  syk4y
   syk4y-init
   syk4y-gen
-  syk4y-build-wheel
   syk4y-kaggle
-  syk4y-upload
   syk4y-doctor
-  syk4y-gen-scaffold
-  syk4y-upload-artifacts
 )
 
 for f in "${REQUIRED_SCRIPTS[@]}"; do
@@ -108,15 +104,12 @@ WRAP
   chmod 0755 "$PKG_DIR/usr/bin/$name"
 }
 
-make_wrapper "syk4y" "syk4y-main"
+make_wrapper "syk4y" "syk4y"
 make_wrapper "syk4y-init" "syk4y-init"
 make_wrapper "syk4y-gen" "syk4y-gen"
-make_wrapper "syk4y-build-wheel" "syk4y-build-wheel"
 make_wrapper "syk4y-kaggle" "syk4y-kaggle"
-make_wrapper "syk4y-upload" "syk4y-upload"
 make_wrapper "syk4y-doctor" "syk4y-doctor"
-make_wrapper "make-gen-full-repo.sh" "syk4y-gen-scaffold"
-make_wrapper "upload-dataset.sh" "syk4y-upload-artifacts"
+make_wrapper "make-gen-full-repo.sh" "syk4y-gen"
 
 INSTALLED_SIZE="$(du -sk "$PKG_DIR/usr" | awk '{print $1}')"
 
@@ -127,7 +120,7 @@ Section: utils
 Priority: optional
 Architecture: $PKG_ARCH
 Maintainer: TaiDuc1001 <taiduc1001@users.noreply.github.com>
-Depends: bash, python3, git
+Depends: bash, git
 Installed-Size: $INSTALLED_SIZE
 Description: syk4y Kaggle artifact automation CLI
  Shell-based utility to scaffold Kaggle upload datasets, build wheelhouse

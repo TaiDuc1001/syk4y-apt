@@ -1,10 +1,34 @@
-# syk4y apt
+# syk4y
 
-`syk4y` is a shell-based CLI for Kaggle artifact automation.
+`syk4y` is a shell CLI to automate Kaggle artifact workflows for a project:
+- scaffold Kaggle dataset folders per artifact (`checkpoints`, `datasets`, `models`, `wheelhouse`)
+- optionally generate `gen-full-repo.py`
+- upload only changed artifacts to Kaggle
+- build and reuse offline `wheelhouse.zip`
 
-## Install via apt (signed)
+## Quick Start (5 minutes)
 
-After a release is published, install with signed-by:
+```bash
+# 1) Install
+sudo apt update
+sudo apt install -y syk4y
+
+# 2) Check environment
+syk4y doctor
+
+# 3) Initialize Kaggle artifact folders (first time per repo)
+syk4y init checkpoints datasets models wheelhouse
+
+# 4) Configure Kaggle credentials (interactive)
+syk4y kaggle login
+
+# 5) Upload changed artifacts
+syk4y kaggle upload
+```
+
+## Install
+
+### Install via apt (signed repo)
 
 ```bash
 curl -fsSL https://taiduc1001.github.io/syk4y-apt/keys/syk4y-archive-keyring.gpg \
@@ -14,62 +38,286 @@ echo "deb [signed-by=/usr/share/keyrings/syk4y-archive-keyring.gpg] https://taid
   | sudo tee /etc/apt/sources.list.d/syk4y.list
 
 sudo apt update
-sudo apt install syk4y
+sudo apt install -y syk4y
 ```
 
-## Commands
+### Runtime notes
+
+- `syk4y` needs a usable Python interpreter at runtime.
+- Python selection order is user-friendly:
+  1. `PYTHON_BIN` (if set)
+  2. local venv in current repo (`.venv`, `venv`, `.env`, `env`, and similar names)
+  3. `uv python find`
+  4. system `python3` / `python`
+- For best results, keep a project-local venv.
+
+Example local setup:
 
 ```bash
-syk4y init <artifact...>
-syk4y gen
-syk4y build-wheel
+uv venv .venv
+uv pip install kaggle
+```
+
+## Get Kaggle Username and API Key
+
+You need Kaggle credentials for `syk4y kaggle upload`.
+
+1. Log in to `https://www.kaggle.com`.
+2. Open `Account` settings.
+3. In `API`, click `Create New Token`.
+4. Kaggle downloads `kaggle.json` containing:
+   - `username`
+   - `key`
+
+Ways to use credentials:
+
+- Interactive:
+
+```bash
 syk4y kaggle login
+```
+
+- Explicit flags:
+
+```bash
+syk4y kaggle login --username <kaggle_username> --key <kaggle_api_key>
+```
+
+- Environment variables:
+
+```bash
+export KAGGLE_USERNAME=<kaggle_username>
+export KAGGLE_KEY=<kaggle_api_key>
 syk4y kaggle upload
+```
+
+Tip: your Kaggle username is also in your profile URL: `https://www.kaggle.com/<username>`.
+
+If you already have a downloaded `kaggle.json`, you can inspect it:
+
+```bash
+cat /path/to/kaggle.json
+```
+
+Typical content:
+
+```json
+{"username":"your_username","key":"your_api_key"}
+```
+
+## Common Workflows
+
+### 1) First-time setup for a repo
+
+```bash
+cd /path/to/your/repo
+syk4y init checkpoints datasets models wheelhouse
+```
+
+What this does:
+- creates `kaggle_upload/` layout
+- creates per-artifact dataset metadata
+- builds or updates `wheelhouse.zip` when `wheelhouse` is included
+- does not require Kaggle login for initialization
+
+### 2) Upload artifacts to Kaggle
+
+Run `syk4y init ...` (or `syk4y gen`) first so dataset metadata exists.
+
+```bash
+syk4y kaggle upload
+```
+
+Useful flags:
+
+```bash
+syk4y kaggle upload --force
+syk4y kaggle upload --message "weekly refresh"
+syk4y kaggle upload --dir-mode zip
+```
+
+### 3) Build wheelhouse only (no Kaggle auth required)
+
+```bash
+syk4y kaggle upload --build-wheel-only
+```
+
+### 4) Install dependencies from wheelhouse offline
+
+After you have `wheelhouse.zip`, extract it first:
+
+```bash
+unzip wheelhouse.zip -d wheelhouse
+```
+
+Install with uv (recommended, usually faster):
+
+```bash
+uv pip install --offline --no-index --find-links /path/to/wheelhouse <package-or-requirements>
+```
+
+Install with pip:
+
+```bash
+pip install --no-index --find-links /path/to/wheelhouse <package-or-requirements>
+```
+
+### 5) Generate full repo snapshot script + scaffold upload folders
+
+```bash
+syk4y gen
+```
+
+`gen` requires a git work tree unless you pass `--skip-gen`.
+
+## Command Reference
+
+### Top-level
+
+```bash
+syk4y [--repo-root DIR] <command>
+```
+
+Commands:
+- `init`   setup Kaggle artifact folders and metadata (no git required)
+- `gen`    generate `gen-full-repo.py` and setup folders (git required unless `--skip-gen`)
+- `kaggle` Kaggle subcommands (`login`, `upload`)
+- `doctor` environment and readiness checks
+
+### `syk4y init`
+
+```bash
+syk4y init [--repo-root DIR] [options] <artifact...>
+```
+
+Options:
+- `-u, --upload-dir DIR`
+- `-w, --wheelhouse FILE`
+
+Artifacts:
+- `checkpoints`
+- `datasets`
+- `models`
+- `wheelhouse`
+
+### `syk4y gen`
+
+```bash
+syk4y gen [options]
+```
+
+Key options:
+- `--repo-root DIR`
+- `--skip-gen`
+- `-a, --artifact NAME` (repeatable)
+- `-o, --out FILE`
+- `-w, --wheelhouse FILE`
+- `-u, --upload-dir DIR`
+
+### `syk4y kaggle login`
+
+```bash
+syk4y kaggle login [--username USERNAME] [--key KEY] [--force] [--non-interactive]
+```
+
+### `syk4y kaggle upload`
+
+```bash
+syk4y kaggle upload [--repo-root DIR] [options]
+```
+
+Key options:
+- `-u, --upload-dir DIR`
+- `--force`
+- `-m, --message TEXT`
+- `--dir-mode MODE` (`skip|zip|tar`)
+- `--build-wheel-only`
+
+### `syk4y doctor`
+
+```bash
+syk4y doctor [--repo-root DIR] [--json]
+```
+
+Use this first when troubleshooting:
+
+```bash
 syk4y doctor
+syk4y doctor --json
 ```
 
-## One-time signing setup
+## Practical Examples
 
-1. Generate an APT signing key locally.
+### Initialize only `datasets` + `models`
 
 ```bash
-gpg --batch --quick-generate-key "syk4y APT <taiduc1001@users.noreply.github.com>" rsa4096 sign 2y
+syk4y init datasets models
 ```
 
-2. Get key id.
+### Run from outside repo
 
 ```bash
-gpg --list-secret-keys --keyid-format LONG
+syk4y --repo-root /path/to/repo init checkpoints wheelhouse
+syk4y --repo-root /path/to/repo kaggle upload
 ```
 
-3. Export private key for GitHub Actions secret.
+### Setup-only mode (no snapshot generation)
 
 ```bash
-gpg --armor --export-secret-keys <KEY_ID> > /tmp/syk4y-private.asc
+syk4y gen --skip-gen -a checkpoints -a wheelhouse
 ```
 
-4. Add GitHub repository secrets:
-- `APT_GPG_PRIVATE_KEY`: content of `/tmp/syk4y-private.asc`
-- `APT_GPG_PASSPHRASE`: key passphrase (empty if no passphrase)
-- `PAGES_ENABLEMENT_TOKEN` (optional but recommended): classic PAT with `repo` scope or fine-grained PAT with Pages write/admin, used once to auto-enable Pages via workflow
+### Non-interactive login (CI style)
 
-Public key is committed in this repo at:
-- `keys/syk4y-archive-keyring.gpg`
-- `keys/syk4y-archive-keyring.asc`
+```bash
+syk4y kaggle login --username "$KAGGLE_USERNAME" --key "$KAGGLE_KEY" --non-interactive
+```
 
-## Release flow
+## Troubleshooting
 
-- Push commit to `main` (no manual tag required)
-- One-time repo setting: `Settings -> Pages -> Source = GitHub Actions` (if not using `PAGES_ENABLEMENT_TOKEN`)
-- GitHub Actions will:
-  1. Build `syk4y_<auto-version>_all.deb`
-  2. Build static APT repo metadata (`dists/`, `pool/`)
-  3. Sign `Release` (`InRelease` + `Release.gpg`)
-  4. Publish public key under `keys/`
-  5. Deploy to GitHub Pages
-  6. Attach `.deb` to an auto-created prerelease tagged by commit
+### "Kaggle credentials are not configured"
 
-## Local packaging
+```bash
+syk4y kaggle login
+```
+
+or set env vars:
+
+```bash
+export KAGGLE_USERNAME=...
+export KAGGLE_KEY=...
+```
+
+### Python not found / pip unavailable
+
+Recommended fix:
+
+```bash
+uv venv .venv
+uv pip install kaggle
+```
+
+Then retry command in the same repo.
+
+### Upload skips because nothing changed
+
+This is expected change-detection behavior.
+
+To force upload:
+
+```bash
+syk4y kaggle upload --force
+```
+
+## Security Notes
+
+- Never commit `~/.kaggle/kaggle.json`.
+- Prefer environment variables in CI.
+- Rotate Kaggle API key if exposed.
+
+## Maintainer Notes (Packaging)
+
+For package/repo maintainers only:
 
 ```bash
 scripts/build-deb.sh --version 0.1.0

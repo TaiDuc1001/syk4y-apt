@@ -15,6 +15,17 @@ Options:
 
 Artifacts:
   checkpoints | datasets | models | wheelhouse
+
+Wheelhouse Artifact Notes:
+  - When 'wheelhouse' is included, syk4y builds/updates wheelhouse.zip from the current Python environment.
+  - This step does not require Kaggle login and does not upload to Kaggle.
+
+Install From Wheelhouse:
+  - Extract wheelhouse.zip first (example: unzip wheelhouse.zip -d wheelhouse)
+  - Prefer uv (faster):
+      uv pip install --offline --no-index --find-links /path/to/wheelhouse <package-or-requirements>
+  - Or pip:
+      pip install --no-index --find-links /path/to/wheelhouse <package-or-requirements>
 USAGE
 }
 
@@ -82,4 +93,4 @@ for artifact in "${artifacts[@]}"; do
   esac
 done
 
-exec "$SCRIPT_DIR/syk4y-gen-scaffold" "${args[@]}"
+exec "$SCRIPT_DIR/syk4y-gen" "${args[@]}"

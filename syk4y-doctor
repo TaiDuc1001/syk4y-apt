@@ -58,21 +58,180 @@ if [[ -z "$upload_root" ]]; then
   upload_root="$repo_root/kaggle_upload"
 fi
 
-has_python3=0
-has_kaggle=0
+python_bin=""
+has_python=0
+has_pip=0
+has_ensurepip=0
+has_uv=0
+has_uv_pip=0
+has_kaggle_cli=0
+has_kaggle_module=0
+has_kaggle_auth=0
 has_git=0
 is_git_repo=0
 has_pyproject=0
 has_gen_script=0
 has_upload_script=0
 issues=0
+warnings=0
 
-if command -v python3 >/dev/null 2>&1; then has_python3=1; else issues=$((issues+1)); fi
-if command -v kaggle >/dev/null 2>&1; then has_kaggle=1; else issues=$((issues+1)); fi
+print_python_install_hint() {
+  cat <<'HINT'
+Hint: install Python with:
+  sudo apt update && sudo apt install -y python3 python3-venv
+or create local venv:
+  uv venv .venv
+HINT
+}
+
+is_python_bin_usable() {
+  local py="$1"
+  if [[ -z "$py" ]]; then
+    return 1
+  fi
+  if [[ "$py" == */* ]]; then
+    [[ -x "$py" ]]
+    return
+  fi
+  command -v "$py" >/dev/null 2>&1
+}
+
+find_repo_venv_python() {
+  local root="$1"
+  local candidate dir_name dir_lc
+  local -a preferred=(.venv venv .env env)
+
+  for dir_name in "${preferred[@]}"; do
+    candidate="$root/$dir_name/bin/python"
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  while IFS= read -r dir_name; do
+    dir_lc="${dir_name,,}"
+    if [[ "$dir_lc" != *venv* ]] && [[ "$dir_lc" != "env" ]] && [[ "$dir_lc" != ".env" ]] && [[ "$dir_lc" != env-* ]] && [[ "$dir_lc" != .env-* ]] && [[ "$dir_lc" != *-env ]]; then
+      continue
+    fi
+    candidate="$root/$dir_name/bin/python"
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | LC_ALL=C sort -u)
+
+  return 1
+}
+
+resolve_python_bin() {
+  local root="$1"
+  local configured="${PYTHON_BIN:-}"
+  local detected=""
+
+  if [[ -n "$configured" ]]; then
+    if is_python_bin_usable "$configured"; then
+      printf '%s\n' "$configured"
+      return 0
+    fi
+    return 1
+  fi
+
+  detected="$(find_repo_venv_python "$root" || true)"
+  if [[ -n "$detected" ]]; then
+    printf '%s\n' "$detected"
+    return 0
+  fi
+
+  if command -v uv >/dev/null 2>&1; then
+    detected="$(uv --directory "$root" python find 2>/dev/null || true)"
+    if is_python_bin_usable "$detected"; then
+      printf '%s\n' "$detected"
+      return 0
+    fi
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "python3"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    printf '%s\n' "python"
+    return 0
+  fi
+
+  return 1
+}
+
+python_bin="$(resolve_python_bin "$repo_root" || true)"
+if [[ -n "$python_bin" ]]; then
+  has_python=1
+fi
+
+if [[ "$has_python" -eq 0 ]]; then
+  issues=$((issues+1))
+fi
+
+if command -v uv >/dev/null 2>&1; then has_uv=1; fi
+
+if [[ "$has_python" -eq 1 ]]; then
+  if "$python_bin" -m pip --version >/dev/null 2>&1; then
+    has_pip=1
+  fi
+  if "$python_bin" -m ensurepip --help >/dev/null 2>&1; then
+    has_ensurepip=1
+  fi
+  if [[ "$has_uv" -eq 1 ]] && uv pip list --python "$python_bin" >/dev/null 2>&1; then
+    has_uv_pip=1
+  fi
+  if "$python_bin" -m kaggle --help >/dev/null 2>&1; then
+    has_kaggle_module=1
+  fi
+fi
+
+if command -v kaggle >/dev/null 2>&1; then has_kaggle_cli=1; fi
 if command -v git >/dev/null 2>&1; then has_git=1; fi
 if [[ -f "$repo_root/pyproject.toml" ]]; then has_pyproject=1; fi
-if [[ -f "$SCRIPT_DIR/syk4y-gen-scaffold" ]]; then has_gen_script=1; fi
-if [[ -f "$SCRIPT_DIR/syk4y-upload-artifacts" ]]; then has_upload_script=1; fi
+if [[ -f "$SCRIPT_DIR/syk4y-gen" ]]; then has_gen_script=1; fi
+if [[ -f "$SCRIPT_DIR/syk4y-kaggle" ]]; then has_upload_script=1; fi
+
+if [[ -n "${KAGGLE_USERNAME:-}" ]] && [[ -n "${KAGGLE_KEY:-}" ]]; then
+  has_kaggle_auth=1
+elif [[ "$has_python" -eq 1 ]]; then
+  if "$python_bin" - <<'PY'
+import json
+from pathlib import Path
+
+cfg = Path.home() / ".kaggle" / "kaggle.json"
+if not cfg.exists():
+    raise SystemExit(1)
+try:
+    data = json.loads(cfg.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+u = data.get("username", "")
+k = data.get("key", "")
+if isinstance(u, str) and u.strip() and isinstance(k, str) and k.strip():
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+  then
+    has_kaggle_auth=1
+  fi
+fi
+
+if [[ "$has_gen_script" -eq 0 ]] || [[ "$has_upload_script" -eq 0 ]]; then
+  issues=$((issues+1))
+fi
+
+if [[ "$has_python" -eq 1 ]] && [[ "$has_pip" -eq 0 ]] && [[ "$has_uv_pip" -eq 0 ]] && [[ "$has_ensurepip" -eq 0 ]]; then
+  warnings=$((warnings+1))
+fi
+if [[ "$has_kaggle_cli" -eq 0 ]] && [[ "$has_kaggle_module" -eq 0 ]]; then
+  warnings=$((warnings+1))
+elif [[ "$has_kaggle_auth" -eq 0 ]]; then
+  warnings=$((warnings+1))
+fi
 
 if [[ "$has_git" -eq 1 ]]; then
   if git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
@@ -80,34 +239,128 @@ if [[ "$has_git" -eq 1 ]]; then
   fi
 fi
 
+upload_runtime_ready=0
+if [[ "$has_kaggle_cli" -eq 1 ]] || [[ "$has_kaggle_module" -eq 1 ]]; then
+  upload_runtime_ready=1
+fi
+
+upload_auth_ready=0
+if [[ "$has_kaggle_auth" -eq 1 ]]; then
+  upload_auth_ready=1
+fi
+
+upload_ready=0
+if [[ "$upload_runtime_ready" -eq 1 ]] && [[ "$upload_auth_ready" -eq 1 ]]; then
+  upload_ready=1
+fi
+
+wheel_build_ready=0
+if [[ "$has_python" -eq 1 ]] && { [[ "$has_pip" -eq 1 ]] || [[ "$has_uv_pip" -eq 1 ]]; }; then
+  wheel_build_ready=1
+fi
+
+wheel_bootstrap_ready=0
+if [[ "$has_python" -eq 1 ]] && { [[ "$has_pip" -eq 1 ]] || [[ "$has_uv_pip" -eq 1 ]] || [[ "$has_ensurepip" -eq 1 ]]; }; then
+  wheel_bootstrap_ready=1
+fi
+
 if [[ "$json" -eq 1 ]]; then
-  python3 - <<PY
+  if [[ "$has_python" -eq 1 ]]; then
+    "$python_bin" - <<PY
 import json
 print(json.dumps({
   "repo_root": ${repo_root@Q},
   "upload_root": ${upload_root@Q},
+  "python_bin": ${python_bin@Q},
   "checks": {
-    "python3": bool($has_python3),
-    "kaggle_cli": bool($has_kaggle),
+    "python": bool($has_python),
+    "pip": bool($has_pip),
+    "uv_pip": bool($has_uv_pip),
+    "ensurepip": bool($has_ensurepip),
+    "uv": bool($has_uv),
+    "kaggle_cli": bool($has_kaggle_cli),
+    "kaggle_python_module": bool($has_kaggle_module),
+    "kaggle_auth_configured": bool($has_kaggle_auth),
     "git": bool($has_git),
     "git_repo_for_gen": bool($is_git_repo),
     "pyproject_toml": bool($has_pyproject),
     "gen_script": bool($has_gen_script),
     "upload_script": bool($has_upload_script)
   },
+  "capabilities": {
+    "upload_runtime_ready": bool($upload_runtime_ready),
+    "upload_auth_ready": bool($upload_auth_ready),
+    "upload_ready": bool($upload_ready),
+    "wheel_build_ready": bool($wheel_build_ready),
+    "wheel_bootstrap_ready": bool($wheel_bootstrap_ready)
+  },
   "ok": bool($issues == 0),
-  "issues": int($issues)
+  "issues": int($issues),
+  "warnings": int($warnings)
 }, indent=2))
 PY
+  else
+    repo_root_json="$(printf '%s' "$repo_root" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    upload_root_json="$(printf '%s' "$upload_root" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    cat <<JSON
+{
+  "repo_root": "$repo_root_json",
+  "upload_root": "$upload_root_json",
+  "python_bin": "",
+  "checks": {
+    "python": false,
+    "pip": false,
+    "uv_pip": false,
+    "ensurepip": false,
+    "uv": $( [[ "$has_uv" -eq 1 ]] && echo true || echo false ),
+    "kaggle_cli": $( [[ "$has_kaggle_cli" -eq 1 ]] && echo true || echo false ),
+    "kaggle_python_module": false,
+    "kaggle_auth_configured": $( [[ "$has_kaggle_auth" -eq 1 ]] && echo true || echo false ),
+    "git": $( [[ "$has_git" -eq 1 ]] && echo true || echo false ),
+    "git_repo_for_gen": $( [[ "$is_git_repo" -eq 1 ]] && echo true || echo false ),
+    "pyproject_toml": $( [[ "$has_pyproject" -eq 1 ]] && echo true || echo false ),
+    "gen_script": $( [[ "$has_gen_script" -eq 1 ]] && echo true || echo false ),
+    "upload_script": $( [[ "$has_upload_script" -eq 1 ]] && echo true || echo false )
+  },
+  "capabilities": {
+    "upload_runtime_ready": $( [[ "$upload_runtime_ready" -eq 1 ]] && echo true || echo false ),
+    "upload_auth_ready": $( [[ "$upload_auth_ready" -eq 1 ]] && echo true || echo false ),
+    "upload_ready": $( [[ "$upload_ready" -eq 1 ]] && echo true || echo false ),
+    "wheel_build_ready": false,
+    "wheel_bootstrap_ready": false
+  },
+  "ok": false,
+  "issues": $issues,
+  "warnings": $warnings
+}
+JSON
+  fi
 else
   echo "Repo root: $repo_root"
   echo "Upload root: $upload_root"
-  echo "python3: $([[ $has_python3 -eq 1 ]] && echo OK || echo MISSING)"
-  echo "kaggle CLI: $([[ $has_kaggle -eq 1 ]] && echo OK || echo MISSING)"
+  echo "python: $([[ $has_python -eq 1 ]] && echo "OK ($python_bin)" || echo MISSING)"
+  echo "pip: $([[ $has_pip -eq 1 ]] && echo OK || echo MISSING)"
+  echo "uv pip: $([[ $has_uv_pip -eq 1 ]] && echo OK || echo MISSING)"
+  echo "ensurepip: $([[ $has_ensurepip -eq 1 ]] && echo OK || echo MISSING)"
+  echo "uv: $([[ $has_uv -eq 1 ]] && echo OK || echo MISSING)"
+  echo "kaggle CLI: $([[ $has_kaggle_cli -eq 1 ]] && echo OK || echo MISSING)"
+  echo "kaggle python module: $([[ $has_kaggle_module -eq 1 ]] && echo OK || echo MISSING)"
+  echo "kaggle auth: $([[ $has_kaggle_auth -eq 1 ]] && echo OK || echo MISSING)"
   echo "git: $([[ $has_git -eq 1 ]] && echo OK || echo MISSING)"
   echo "git repo for 'gen': $([[ $is_git_repo -eq 1 ]] && echo OK || echo NO)"
   echo "pyproject.toml: $([[ $has_pyproject -eq 1 ]] && echo FOUND || echo MISSING)"
+  echo "upload runtime ready: $([[ $upload_runtime_ready -eq 1 ]] && echo YES || echo NO)"
+  echo "upload auth ready: $([[ $upload_auth_ready -eq 1 ]] && echo YES || echo NO)"
+  echo "upload ready: $([[ $upload_ready -eq 1 ]] && echo YES || echo NO)"
+  echo "wheel build ready: $([[ $wheel_build_ready -eq 1 ]] && echo YES || echo NO)"
+  echo "wheel bootstrap ready: $([[ $wheel_bootstrap_ready -eq 1 ]] && echo YES || echo NO)"
   echo "scripts: gen=$([[ $has_gen_script -eq 1 ]] && echo OK || echo MISSING), upload=$([[ $has_upload_script -eq 1 ]] && echo OK || echo MISSING)"
+  if [[ "$warnings" -gt 0 ]]; then
+    echo "warnings: $warnings"
+  fi
+  if [[ "$has_python" -eq 0 ]]; then
+    print_python_install_hint
+  fi
 fi
 
 if [[ "$issues" -gt 0 ]]; then
