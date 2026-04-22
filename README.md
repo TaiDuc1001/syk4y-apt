@@ -57,14 +57,14 @@ Public key is committed in this repo at:
 
 ## Release flow
 
-- Push tag: `vX.Y.Z` (example: `v0.1.0`)
+- Push commit to `main` (no manual tag required)
 - GitHub Actions will:
-  1. Build `syk4y_X.Y.Z_all.deb`
+  1. Build `syk4y_<auto-version>_all.deb`
   2. Build static APT repo metadata (`dists/`, `pool/`)
   3. Sign `Release` (`InRelease` + `Release.gpg`)
   4. Publish public key under `keys/`
   5. Deploy to GitHub Pages
-  6. Attach `.deb` to GitHub Release
+  6. Attach `.deb` to an auto-created prerelease tagged by commit
 
 ## Local packaging
 

@@ -2,12 +2,12 @@ name: Release APT Repository
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version:
-        description: 'Debian version (only for manual runs, e.g. 0.1.0-dev.1)'
+        description: 'Optional Debian version override (e.g. 0.1.0-dev.1)'
         required: false
         default: ''
 
@@ -35,13 +35,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            version="${GITHUB_REF_NAME#v}"
-          else
-            version="${{ github.event.inputs.version }}"
-            if [[ -z "$version" ]]; then
-              version="0.0.0-dev.${GITHUB_RUN_NUMBER}"
-            fi
+          short_sha="${GITHUB_SHA::12}"
+
+          version="${{ github.event.inputs.version }}"
+          if [[ -z "$version" ]]; then
+            version="0.0.${GITHUB_RUN_NUMBER}+git${short_sha}"
           fi
 
           if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]*$ ]]; then
@@ -49,7 +47,12 @@ jobs:
             exit 1
           fi
 
+          release_tag="commit-${short_sha}"
+          release_name="Commit ${short_sha}"
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
           echo "Resolved version: $version"
 
       - name: Build deb package
@@ -144,9 +147,12 @@ sudo apt install syk4y</pre>
           path: dist/deb/*.deb
 
       - name: Create GitHub release with .deb
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.meta.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.meta.outputs.release_name }}
+          prerelease: true
           files: dist/deb/*.deb
           generate_release_notes: true
 
