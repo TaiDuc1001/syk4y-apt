@@ -21,17 +21,19 @@ USAGE
 login_usage() {
   cat <<'USAGE'
 Usage:
-  syk4y kaggle login [--username USERNAME] [--key KEY] [--non-interactive]
+  syk4y kaggle login [--username USERNAME] [--key KEY] [--force] [--non-interactive]
 
 Options:
   --username USERNAME   Kaggle username
   --key KEY             Kaggle API key
+  --force               Overwrite existing ~/.kaggle/kaggle.json
   --non-interactive     Fail instead of prompting for missing values
   -h, --help            Show this help
 
 If --username/--key are omitted, values are taken from:
   1) KAGGLE_USERNAME / KAGGLE_KEY env vars
-  2) interactive prompt
+  2) existing ~/.kaggle/kaggle.json (status only)
+  3) interactive prompt
 USAGE
 }
 
@@ -48,7 +50,11 @@ kaggle_login() {
 
   local username="${KAGGLE_USERNAME:-}"
   local key="${KAGGLE_KEY:-}"
+  local force=0
   local non_interactive=0
+  local kaggle_dir="$HOME/.kaggle"
+  local kaggle_json="$kaggle_dir/kaggle.json"
+  local has_explicit_creds=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -68,6 +74,10 @@ kaggle_login() {
         key="$2"
         shift 2
         ;;
+      --force)
+        force=1
+        shift
+        ;;
       --non-interactive)
         non_interactive=1
         shift
@@ -83,6 +93,56 @@ kaggle_login() {
         ;;
     esac
   done
+
+  if [[ -n "$username" || -n "$key" ]]; then
+    has_explicit_creds=1
+  fi
+
+  if [[ "$force" -eq 0 ]] && [[ "$has_explicit_creds" -eq 0 ]] && [[ -f "$kaggle_json" ]]; then
+    local existing_status existing_username parse_out
+    parse_out="$(
+      python3 - "$kaggle_json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    print("INVALID\t")
+    raise SystemExit(0)
+
+username = data.get("username")
+key = data.get("key")
+if isinstance(username, str) and username.strip() and isinstance(key, str) and key.strip():
+    print(f"OK\t{username.strip()}")
+else:
+    print("INVALID\t")
+PY
+    )"
+    existing_status="${parse_out%%$'\t'*}"
+    existing_username="${parse_out#*$'\t'}"
+
+    if [[ "$existing_status" == "OK" ]]; then
+      echo "Kaggle credentials already configured."
+      echo "  file: $kaggle_json"
+      echo "  username: $existing_username"
+      if command -v kaggle >/dev/null 2>&1; then
+        if kaggle datasets list -s test -p 1 >/dev/null 2>&1; then
+          echo "  auth check: OK"
+        else
+          echo "  auth check: failed (username/key may be invalid)."
+        fi
+      else
+        echo "  auth check: skipped (kaggle CLI not found)"
+      fi
+      echo "Use --force or pass --username/--key to overwrite credentials."
+      return 0
+    fi
+
+    echo "Existing $kaggle_json is invalid. Reconfiguring..."
+  fi
 
   if [[ -z "$username" ]] || [[ -z "$key" ]]; then
     if [[ "$non_interactive" -eq 1 ]]; then
@@ -103,9 +163,6 @@ kaggle_login() {
     echo "Error: username/key cannot be empty." >&2
     exit 1
   fi
-
-  local kaggle_dir="$HOME/.kaggle"
-  local kaggle_json="$kaggle_dir/kaggle.json"
 
   mkdir -p "$kaggle_dir"
   chmod 700 "$kaggle_dir"
