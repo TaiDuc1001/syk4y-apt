@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 OUT_FILE="gen-full-repo.py"
 WHEELHOUSE_FILE="wheelhouse.zip"
 UPLOAD_ROOT="kaggle_upload"
