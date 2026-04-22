@@ -516,10 +516,6 @@ dir_mode = sys.argv[4].strip().lower()
 expected = set()
 if artifact_id == "wheelhouse":
     expected.add(artifact_item_name)
-elif dir_mode == "zip":
-    expected.add(f"{artifact_id}.zip")
-elif dir_mode == "tar":
-    expected.add(f"{artifact_id}.tar")
 
 if not expected:
     print("")
@@ -652,11 +648,6 @@ if [[ "$BUILD_WHEEL_ONLY" -eq 1 ]]; then
 fi
 
 resolve_initialized_artifacts
-
-if [[ " ${ARTIFACT_IDS[*]} " == *" wheelhouse "* ]]; then
-  PREV_WHEELHOUSE_INPUT="$(read_state_value "$WHEELHOUSE_INPUT_KEY")"
-  build_wheelhouse_if_needed "$PREV_WHEELHOUSE_INPUT"
-fi
 
 verify_dataset_structure
 

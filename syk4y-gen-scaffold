@@ -116,6 +116,28 @@ is_valid_artifact() {
   esac
 }
 
+build_wheelhouse_for_init() {
+  local tmp_root tmp_upload_root tmp_wheelhouse_path
+  tmp_root="${SYK4Y_WHEELHOUSE_TMP_ROOT:-/tmp/syk4y-wheelhouse-cache}"
+  tmp_upload_root="$tmp_root/$REPO_SLUG"
+  tmp_wheelhouse_path="$tmp_upload_root/${REPO_SLUG}-wheelhouse/wheelhouse.zip"
+
+  mkdir -p "$tmp_upload_root"
+  mkdir -p "$(dirname "$WHEELHOUSE_ABS")"
+
+  echo "    wheelhouse build root: $tmp_upload_root"
+  "$SCRIPT_DIR/syk4y-build-wheel" --repo-root "$REPO_ROOT" --upload-dir "$tmp_upload_root"
+
+  if [[ ! -f "$tmp_wheelhouse_path" ]]; then
+    echo "Error: wheelhouse build finished but missing '$tmp_wheelhouse_path'." >&2
+    exit 1
+  fi
+
+  ln -sfn "$tmp_wheelhouse_path" "$WHEELHOUSE_ABS"
+  echo "    wheelhouse source: $tmp_wheelhouse_path"
+  echo "    link: $WHEELHOUSE_ABS -> $tmp_wheelhouse_path"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo-root)
@@ -432,7 +454,7 @@ for artifact in "${SELECTED_ARTIFACTS[@]}"; do
       echo "    link: $dst -> $src"
     fi
   else
-    echo "    wheelhouse zip target: $WHEELHOUSE_ABS"
+    build_wheelhouse_for_init
   fi
 
   python3 - "$metadata_path" "$REPO_NAME" "$KAGGLE_USERNAME" "$artifact_slug" "$artifact" <<'PY'
