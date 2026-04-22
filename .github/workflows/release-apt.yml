@@ -85,7 +85,6 @@ jobs:
             <title>Install syk4y</title>
           </head>
           <body>
-            <h1>Install syk4y</h1>
             <pre>curl -fsSL https://${owner}.github.io/${repo}/keys/syk4y-archive-keyring.gpg | sudo tee /usr/share/keyrings/syk4y-archive-keyring.gpg >/dev/null
             echo "deb [signed-by=/usr/share/keyrings/syk4y-archive-keyring.gpg] https://${owner}.github.io/${repo} stable main" | sudo tee /etc/apt/sources.list.d/syk4y.list
             sudo apt update
