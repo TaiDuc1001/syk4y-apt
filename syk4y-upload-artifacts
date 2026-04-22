@@ -69,8 +69,8 @@ fi
 UPLOAD_ROOT="${KAGGLE_UPLOAD_ROOT:-$REPO_ROOT/kaggle_upload}"
 STATE_FILE="$UPLOAD_ROOT/.upload-state.json"
 
-ARTIFACT_DIRS=(checkpoints datasets models)
-ARTIFACT_IDS=("${ARTIFACT_DIRS[@]}" wheelhouse)
+ALL_ARTIFACT_IDS=(checkpoints datasets models wheelhouse)
+ARTIFACT_IDS=()
 
 DIR_MODE="${KAGGLE_DIR_MODE:-zip}"
 VERSION_MESSAGE="${KAGGLE_VERSION_MESSAGE:-Artifacts update $(date '+%Y-%m-%d %H:%M:%S')}"
@@ -269,6 +269,26 @@ except BaseException:
 value = data.get(key, "")
 print(value if isinstance(value, str) else "")
 PY
+}
+
+resolve_initialized_artifacts() {
+  local artifact_id metadata_file
+  ARTIFACT_IDS=()
+
+  for artifact_id in "${ALL_ARTIFACT_IDS[@]}"; do
+    metadata_file="$(artifact_metadata_file "$artifact_id")"
+    if [[ -f "$metadata_file" ]]; then
+      ARTIFACT_IDS+=("$artifact_id")
+    fi
+  done
+
+  if [[ "${#ARTIFACT_IDS[@]}" -eq 0 ]]; then
+    echo "Error: no initialized artifacts found under '$UPLOAD_ROOT'." >&2
+    echo "Run: syk4y init <checkpoints|datasets|models|wheelhouse> first." >&2
+    exit 1
+  fi
+
+  echo "Detected initialized artifacts: ${ARTIFACT_IDS[*]}"
 }
 
 write_state_file() {
@@ -620,16 +640,22 @@ ensure_pip "$WHEELHOUSE_PYTHON"
 
 mkdir -p "$UPLOAD_ROOT"
 
-PREV_WHEELHOUSE_INPUT="$(read_state_value "$WHEELHOUSE_INPUT_KEY")"
-build_wheelhouse_if_needed "$PREV_WHEELHOUSE_INPUT"
-
 if [[ "$BUILD_WHEEL_ONLY" -eq 1 ]]; then
+  PREV_WHEELHOUSE_INPUT="$(read_state_value "$WHEELHOUSE_INPUT_KEY")"
+  build_wheelhouse_if_needed "$PREV_WHEELHOUSE_INPUT"
   if [[ ! -f "$WHEELHOUSE_PATH" ]]; then
     echo "Error: wheelhouse build completed but '$WHEELHOUSE_PATH' is missing." >&2
     exit 1
   fi
   echo "Build-wheel-only mode complete: $WHEELHOUSE_PATH"
   exit 0
+fi
+
+resolve_initialized_artifacts
+
+if [[ " ${ARTIFACT_IDS[*]} " == *" wheelhouse "* ]]; then
+  PREV_WHEELHOUSE_INPUT="$(read_state_value "$WHEELHOUSE_INPUT_KEY")"
+  build_wheelhouse_if_needed "$PREV_WHEELHOUSE_INPUT"
 fi
 
 verify_dataset_structure
