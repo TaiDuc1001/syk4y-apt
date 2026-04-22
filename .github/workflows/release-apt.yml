@@ -90,9 +90,9 @@ jobs:
             <pre>https://${owner}.github.io/${repo}</pre>
             <p>Install:</p>
             <pre>curl -fsSL https://${owner}.github.io/${repo}/keys/syk4y-archive-keyring.gpg | sudo tee /usr/share/keyrings/syk4y-archive-keyring.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/syk4y-archive-keyring.gpg] https://${owner}.github.io/${repo} stable main" | sudo tee /etc/apt/sources.list.d/syk4y.list
-sudo apt update
-sudo apt install syk4y</pre>
+            echo "deb [signed-by=/usr/share/keyrings/syk4y-archive-keyring.gpg] https://${owner}.github.io/${repo} stable main" | sudo tee /etc/apt/sources.list.d/syk4y.list
+            sudo apt update
+            sudo apt install syk4y</pre>
           </body>
           </html>
           HTML
