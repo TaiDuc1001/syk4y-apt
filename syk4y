@@ -12,7 +12,7 @@ Usage:
 
 Commands:
   init         Setup Kaggle upload folders/metadata for selected artifacts (no git required)
-  gen          Generate gen-full-repo.py (initialize upload folders only with -a/--artifact)
+  gen          Generate gen-full.py in upload dir (initialize folders only with -a/--artifact)
   kaggle       Kaggle helpers (login/upload)
   doctor       Check environment and repository readiness
   help         Show this help

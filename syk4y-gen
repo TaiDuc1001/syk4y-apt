@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-OUT_FILE="gen-full-repo.py"
+OUT_FILE=""
+OUT_FILE_EXPLICIT=0
 WHEELHOUSE_FILE="wheelhouse.zip"
 UPLOAD_ROOT="kaggle_upload"
 ALL_ARTIFACTS=(checkpoints datasets models wheelhouse)
@@ -20,11 +21,11 @@ Usage:
 
 Options:
   --repo-root DIR        Target repository root (default: git root, or CWD with --skip-gen)
-  --skip-gen             Skip generating gen-full-repo.py and only setup Kaggle upload folders
+  --skip-gen             Skip generating gen-full.py and only setup Kaggle upload folders
   -a, --artifact NAME    Artifact to initialize (repeatable).
                          Valid: checkpoints, datasets, models, wheelhouse.
                          Default: none (no upload-folder initialization).
-  -o, --out FILE         Output snapshot script path (default: gen-full-repo.py)
+  -o, --out FILE         Output snapshot script path (default: <upload-dir>/gen-full.py)
   -w, --wheelhouse FILE  Wheelhouse archive name/path (default: wheelhouse.zip in upload dataset folder)
   -u, --upload-dir DIR   Kaggle upload root directory (default: kaggle_upload)
   -h, --help             Show this help
@@ -240,6 +241,7 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       OUT_FILE="$2"
+      OUT_FILE_EXPLICIT=1
       shift 2
       ;;
     -w|--wheelhouse)
@@ -269,6 +271,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$OUT_FILE_EXPLICIT" -eq 0 ]]; then
+  OUT_FILE="${UPLOAD_ROOT}/gen-full.py"
+fi
 
 if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
   declare -A seen_artifacts=()

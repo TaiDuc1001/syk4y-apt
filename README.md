@@ -2,7 +2,7 @@
 
 `syk4y` is a shell CLI to automate Kaggle artifact workflows for a project:
 - initialize Kaggle dataset folders per artifact (`checkpoints`, `datasets`, `models`, `wheelhouse`)
-- optionally generate `gen-full-repo.py`
+- optionally generate `kaggle_upload/gen-full.py`
 - upload only changed artifacts to Kaggle
 - build and reuse offline `wheelhouse.zip`
 
@@ -169,7 +169,7 @@ syk4y gen
 ```
 
 `gen` requires a git work tree unless you pass `--skip-gen`.
-By default it only generates `gen-full-repo.py`.
+By default it only generates `kaggle_upload/gen-full.py`.
 To initialize Kaggle artifact folders in the same command, pass artifacts explicitly:
 
 ```bash
@@ -186,7 +186,7 @@ syk4y [--repo-root DIR] <command>
 
 Commands:
 - `init`   setup Kaggle artifact folders and metadata (no git required)
-- `gen`    generate `gen-full-repo.py`; initialize upload folders only when `-a/--artifact` is provided
+- `gen`    generate `gen-full.py` in upload dir; initialize upload folders only when `-a/--artifact` is provided
 - `kaggle` Kaggle subcommands (`login`, `upload`)
 - `doctor` environment and readiness checks
 
