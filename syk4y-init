@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  syk4y init [--repo-root DIR] [options] <artifact...>
+
+Options:
+  -u, --upload-dir DIR   Upload root (default: kaggle_upload under repo root)
+  -w, --wheelhouse FILE  Wheelhouse archive filename/path (default: wheelhouse.zip)
+  -h, --help             Show this help
+
+Artifacts:
+  checkpoints | datasets | models | wheelhouse
+USAGE
+}
+
+repo_root="$(pwd)"
+if [[ $# -gt 0 ]] && [[ "$1" == "--repo-root" ]]; then
+  if [[ $# -lt 2 ]]; then
+    echo "Missing value for --repo-root" >&2
+    exit 2
+  fi
+  repo_root="$2"
+  shift 2
+fi
+
+args=(--repo-root "$repo_root" --skip-gen)
+artifacts=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -u|--upload-dir|-w|--wheelhouse)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      args+=("$1" "$2")
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        artifacts+=("$1")
+        shift
+      done
+      ;;
+    -* )
+      echo "Unknown init option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      artifacts+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ "${#artifacts[@]}" -eq 0 ]]; then
+  echo "Error: init requires at least one artifact: checkpoints|datasets|models|wheelhouse." >&2
+  usage >&2
+  exit 2
+fi
+
+for artifact in "${artifacts[@]}"; do
+  case "$artifact" in
+    checkpoints|datasets|models|wheelhouse)
+      args+=(--artifact "$artifact")
+      ;;
+    *)
+      echo "Error: invalid artifact '$artifact'. Valid values: checkpoints, datasets, models, wheelhouse." >&2
+      exit 2
+      ;;
+  esac
+done
+
+exec "$SCRIPT_DIR/syk4y-gen-scaffold" "${args[@]}"

@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  syk4y doctor [--repo-root DIR] [options]
+
+Options:
+  -u, --upload-dir DIR   Upload root (default: kaggle_upload under repo root)
+  --json                 Output JSON
+  -h, --help             Show this help
+USAGE
+}
+
+repo_root="$(pwd)"
+if [[ $# -gt 0 ]] && [[ "$1" == "--repo-root" ]]; then
+  if [[ $# -lt 2 ]]; then
+    echo "Missing value for --repo-root" >&2
+    exit 2
+  fi
+  repo_root="$2"
+  shift 2
+fi
+
+upload_root=""
+json=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -u|--upload-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      upload_root="$2"
+      shift 2
+      ;;
+    --json)
+      json=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown doctor option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$upload_root" ]]; then
+  upload_root="$repo_root/kaggle_upload"
+fi
+
+has_python3=0
+has_kaggle=0
+has_git=0
+is_git_repo=0
+has_pyproject=0
+has_gen_script=0
+has_upload_script=0
+issues=0
+
+if command -v python3 >/dev/null 2>&1; then has_python3=1; else issues=$((issues+1)); fi
+if command -v kaggle >/dev/null 2>&1; then has_kaggle=1; else issues=$((issues+1)); fi
+if command -v git >/dev/null 2>&1; then has_git=1; fi
+if [[ -f "$repo_root/pyproject.toml" ]]; then has_pyproject=1; fi
+if [[ -f "$SCRIPT_DIR/syk4y-gen-scaffold" ]]; then has_gen_script=1; fi
+if [[ -f "$SCRIPT_DIR/syk4y-upload-artifacts" ]]; then has_upload_script=1; fi
+
+if [[ "$has_git" -eq 1 ]]; then
+  if git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
+    is_git_repo=1
+  fi
+fi
+
+if [[ "$json" -eq 1 ]]; then
+  python3 - <<PY
+import json
+print(json.dumps({
+  "repo_root": ${repo_root@Q},
+  "upload_root": ${upload_root@Q},
+  "checks": {
+    "python3": bool($has_python3),
+    "kaggle_cli": bool($has_kaggle),
+    "git": bool($has_git),
+    "git_repo_for_gen": bool($is_git_repo),
+    "pyproject_toml": bool($has_pyproject),
+    "gen_script": bool($has_gen_script),
+    "upload_script": bool($has_upload_script)
+  },
+  "ok": bool($issues == 0),
+  "issues": int($issues)
+}, indent=2))
+PY
+else
+  echo "Repo root: $repo_root"
+  echo "Upload root: $upload_root"
+  echo "python3: $([[ $has_python3 -eq 1 ]] && echo OK || echo MISSING)"
+  echo "kaggle CLI: $([[ $has_kaggle -eq 1 ]] && echo OK || echo MISSING)"
+  echo "git: $([[ $has_git -eq 1 ]] && echo OK || echo MISSING)"
+  echo "git repo for 'gen': $([[ $is_git_repo -eq 1 ]] && echo OK || echo NO)"
+  echo "pyproject.toml: $([[ $has_pyproject -eq 1 ]] && echo FOUND || echo MISSING)"
+  echo "scripts: gen=$([[ $has_gen_script -eq 1 ]] && echo OK || echo MISSING), upload=$([[ $has_upload_script -eq 1 ]] && echo OK || echo MISSING)"
+fi
+
+if [[ "$issues" -gt 0 ]]; then
+  exit 1
+fi

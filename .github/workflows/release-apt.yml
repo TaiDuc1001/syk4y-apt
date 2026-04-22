@@ -1,0 +1,165 @@
+name: Release APT Repository
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Debian version (only for manual runs, e.g. 0.1.0-dev.1)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils gnupg
+
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ github.event.inputs.version }}"
+            if [[ -z "$version" ]]; then
+              version="0.0.0-dev.${GITHUB_RUN_NUMBER}"
+            fi
+          fi
+
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]*$ ]]; then
+            echo "Invalid Debian version: $version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
+
+      - name: Build deb package
+        run: |
+          scripts/build-deb.sh --version "${{ steps.meta.outputs.version }}"
+
+      - name: Build static apt repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner_repo="${GITHUB_REPOSITORY}"
+          owner="${owner_repo%%/*}"
+          repo="${owner_repo##*/}"
+
+          deb_file="$(ls dist/deb/*.deb | head -n 1)"
+          scripts/build-apt-repo.sh \
+            --output-dir site \
+            --deb "$deb_file" \
+            --origin "$owner" \
+            --label "$repo" \
+            --suite stable \
+            --component main
+
+          cat > site/index.html <<HTML
+          <!doctype html>
+          <html>
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>syk4y APT Repository</title>
+          </head>
+          <body>
+            <h1>syk4y APT Repository</h1>
+            <p>Repository URL:</p>
+            <pre>https://${owner}.github.io/${repo}</pre>
+            <p>Install:</p>
+            <pre>curl -fsSL https://${owner}.github.io/${repo}/keys/syk4y-archive-keyring.gpg | sudo tee /usr/share/keyrings/syk4y-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/syk4y-archive-keyring.gpg] https://${owner}.github.io/${repo} stable main" | sudo tee /etc/apt/sources.list.d/syk4y.list
+sudo apt update
+sudo apt install syk4y</pre>
+          </body>
+          </html>
+          HTML
+
+      - name: Import APT signing key
+        id: signing_key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${APT_GPG_PRIVATE_KEY}" ]]; then
+            echo "Missing required secret: APT_GPG_PRIVATE_KEY" >&2
+            exit 1
+          fi
+
+          export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          key_id="$(gpg --batch --list-secret-keys --with-colons | awk -F: '$1=="sec"{print $5; exit}')"
+          if [[ -z "$key_id" ]]; then
+            echo "Could not resolve imported signing key id." >&2
+            exit 1
+          fi
+
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "key_id=$key_id" >> "$GITHUB_OUTPUT"
+          echo "Using signing key id: $key_id"
+
+      - name: Sign apt metadata and export public key
+        env:
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          scripts/sign-apt-release.sh \
+            --repo-dir site \
+            --suite stable \
+            --key-id "${{ steps.signing_key.outputs.key_id }}" \
+            --public-key-output keys/syk4y-archive-keyring.gpg \
+            --public-key-asc keys/syk4y-archive-keyring.asc
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: syk4y-deb-${{ steps.meta.outputs.version }}
+          path: dist/deb/*.deb
+
+      - name: Create GitHub release with .deb
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/deb/*.deb
+          generate_release_notes: true
+
+  deploy-pages:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

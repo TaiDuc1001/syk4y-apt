@@ -1,0 +1,471 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OUT_FILE="gen-full-repo.py"
+WHEELHOUSE_FILE="wheelhouse.zip"
+UPLOAD_ROOT="kaggle_upload"
+ALL_ARTIFACTS=(checkpoints datasets models wheelhouse)
+REPO_ROOT_OVERRIDE=""
+SKIP_GEN=0
+SELECTED_ARTIFACTS=()
+
+usage() {
+  cat <<'USAGE'
+Generate repo snapshot script and prepare split Kaggle upload artifact folders.
+
+Usage:
+  ./syk4y-gen-scaffold [options]
+
+Options:
+  --repo-root DIR        Target repository root (default: git root, or CWD with --skip-gen)
+  --skip-gen             Skip generating gen-full-repo.py and only setup Kaggle upload folders
+  -a, --artifact NAME    Artifact to scaffold (repeatable).
+                         Valid: checkpoints, datasets, models, wheelhouse.
+                         Default: all artifacts.
+  -o, --out FILE         Output snapshot script path (default: gen-full-repo.py)
+  -w, --wheelhouse FILE  Wheelhouse archive name/path (default: wheelhouse.zip in upload dataset folder)
+  -u, --upload-dir DIR   Kaggle upload root directory (default: kaggle_upload)
+  -h, --help             Show this help
+USAGE
+}
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Error: $cmd is required." >&2
+    exit 1
+  fi
+}
+
+slugify() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  value="$(printf '%s' "$value" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+  if [[ -z "$value" ]]; then
+    value="dataset-artifacts"
+  fi
+  printf '%s\n' "$value"
+}
+
+resolve_kaggle_username() {
+  if [[ -n "${KAGGLE_USERNAME:-}" ]]; then
+    printf '%s\n' "$KAGGLE_USERNAME"
+    return
+  fi
+
+  local detected=""
+  detected="$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+cfg = Path.home() / '.kaggle' / 'kaggle.json'
+if cfg.exists():
+    try:
+        data = json.loads(cfg.read_text(encoding='utf-8'))
+        user = data.get('username')
+        if isinstance(user, str) and user.strip():
+            print(user.strip())
+    except Exception:
+        pass
+PY
+)"
+
+  if [[ -n "$detected" ]]; then
+    printf '%s\n' "$detected"
+    return
+  fi
+
+  echo "Error: could not resolve Kaggle username. Set KAGGLE_USERNAME or ~/.kaggle/kaggle.json." >&2
+  exit 1
+}
+
+resolve_python_bin() {
+  local python_bin="${PYTHON_BIN:-}"
+
+  if [[ -z "$python_bin" ]]; then
+    python_bin="$(uv python find 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$python_bin" ]]; then
+    python_bin="python3"
+  fi
+
+  if [[ "$python_bin" == */* ]]; then
+    if [[ ! -x "$python_bin" ]]; then
+      echo "Python interpreter not executable: $python_bin" >&2
+      exit 1
+    fi
+  else
+    if ! command -v "$python_bin" >/dev/null 2>&1; then
+      echo "$python_bin is required but not found in PATH." >&2
+      exit 1
+    fi
+  fi
+
+  printf '%s\n' "$python_bin"
+}
+
+is_valid_artifact() {
+  case "$1" in
+    checkpoints|datasets|models|wheelhouse)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo-root)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      REPO_ROOT_OVERRIDE="$2"
+      shift 2
+      ;;
+    --skip-gen)
+      SKIP_GEN=1
+      shift
+      ;;
+    -a|--artifact)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      SELECTED_ARTIFACTS+=("$2")
+      shift 2
+      ;;
+    -o|--out)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      OUT_FILE="$2"
+      shift 2
+      ;;
+    -w|--wheelhouse)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      WHEELHOUSE_FILE="$2"
+      shift 2
+      ;;
+    -u|--upload-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      UPLOAD_ROOT="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+require_cmd python3
+
+if [[ "${#SELECTED_ARTIFACTS[@]}" -eq 0 ]]; then
+  SELECTED_ARTIFACTS=("${ALL_ARTIFACTS[@]}")
+else
+  declare -A seen_artifacts=()
+  normalized_artifacts=()
+  for artifact in "${SELECTED_ARTIFACTS[@]}"; do
+    if ! is_valid_artifact "$artifact"; then
+      echo "Error: invalid artifact '$artifact'. Valid values: checkpoints, datasets, models, wheelhouse." >&2
+      exit 2
+    fi
+    if [[ -z "${seen_artifacts[$artifact]+x}" ]]; then
+      seen_artifacts["$artifact"]=1
+      normalized_artifacts+=("$artifact")
+    fi
+  done
+  SELECTED_ARTIFACTS=("${normalized_artifacts[@]}")
+fi
+
+if [[ -n "$REPO_ROOT_OVERRIDE" ]]; then
+  if [[ "$REPO_ROOT_OVERRIDE" == /* ]]; then
+    REPO_ROOT="$REPO_ROOT_OVERRIDE"
+  else
+    REPO_ROOT="$(cd "$REPO_ROOT_OVERRIDE" && pwd)"
+  fi
+else
+  if [[ "$SKIP_GEN" -eq 1 ]]; then
+    REPO_ROOT="$(pwd)"
+  else
+    require_cmd git
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  fi
+fi
+
+if [[ -z "$REPO_ROOT" ]] || [[ ! -d "$REPO_ROOT" ]]; then
+  echo "Error: invalid repository root: '$REPO_ROOT'." >&2
+  exit 1
+fi
+
+if [[ "$SKIP_GEN" -eq 0 ]]; then
+  require_cmd git
+  GIT_ROOT="$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "$GIT_ROOT" ]]; then
+    echo "Error: 'gen' requires a git repository. '$REPO_ROOT' is not inside a git work tree." >&2
+    echo "Hint: run inside a git repo, or use --skip-gen for setup-only mode." >&2
+    exit 1
+  fi
+  REPO_ROOT="$GIT_ROOT"
+fi
+
+cd "$REPO_ROOT"
+
+REPO_NAME="$(basename "$REPO_ROOT")"
+REPO_SLUG="$(slugify "$REPO_NAME")"
+KAGGLE_USERNAME="$(resolve_kaggle_username)"
+PYTHON_BIN="$(resolve_python_bin)"
+
+if [[ "$OUT_FILE" == /* ]]; then
+  OUT_ABS="$OUT_FILE"
+else
+  OUT_ABS="$REPO_ROOT/$OUT_FILE"
+fi
+
+if [[ "$UPLOAD_ROOT" == /* ]]; then
+  UPLOAD_ROOT_ABS="$UPLOAD_ROOT"
+else
+  UPLOAD_ROOT_ABS="$REPO_ROOT/$UPLOAD_ROOT"
+fi
+
+WHEELHOUSE_DATASET_DIR="$UPLOAD_ROOT_ABS/${REPO_SLUG}-wheelhouse"
+
+if [[ "$WHEELHOUSE_FILE" == /* ]]; then
+  WHEELHOUSE_ABS="$WHEELHOUSE_FILE"
+else
+  WHEELHOUSE_ABS="$WHEELHOUSE_DATASET_DIR/$WHEELHOUSE_FILE"
+fi
+
+if [[ "$SKIP_GEN" -eq 1 ]]; then
+  echo "[1/3] Skipping snapshot generation (--skip-gen)"
+else
+  echo "[1/3] Generating snapshot script -> $OUT_ABS"
+  python3 - "$REPO_ROOT" "$OUT_ABS" <<'PY'
+import base64
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+repo_root = Path(sys.argv[1]).resolve(strict=False)
+out_abs = Path(sys.argv[2]).resolve(strict=False)
+
+out_abs.parent.mkdir(parents=True, exist_ok=True)
+
+out_skip = None
+try:
+    out_skip = out_abs.relative_to(repo_root).as_posix()
+except ValueError:
+    out_skip = None
+
+raw_paths = subprocess.check_output(
+    [
+        "git",
+        "-c",
+        "core.quotepath=off",
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+    ],
+    cwd=repo_root,
+)
+paths = [p for p in raw_paths.decode("utf-8", "surrogateescape").split("\0") if p]
+paths.sort(key=lambda p: p.encode("utf-8", "surrogateescape"))
+
+entries = []
+file_count = 0
+link_count = 0
+
+for rel_path in paths:
+    if out_skip and rel_path == out_skip:
+        continue
+
+    full_path = repo_root / rel_path
+
+    if full_path.is_symlink():
+        entries.append(("symlink", rel_path, os.readlink(full_path), None, None))
+        link_count += 1
+        continue
+
+    if not full_path.is_file():
+        continue
+
+    mode = stat.S_IMODE(full_path.stat().st_mode)
+    data_b64 = base64.b64encode(full_path.read_bytes()).decode("ascii")
+    entries.append(("file", rel_path, None, mode, data_b64))
+    file_count += 1
+
+tmp_fd, tmp_name = tempfile.mkstemp(prefix=f"{out_abs.name}.", suffix=".tmp", dir=str(out_abs.parent))
+os.close(tmp_fd)
+
+header = """# GEN CODE SCRIPT
+import base64
+import os
+import shutil
+import sys
+from pathlib import Path
+
+
+def _remove_if_exists(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def restore(target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    for kind, rel_path, link_target, mode, data_b64 in ENTRIES:
+        dst = target_dir / rel_path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        _remove_if_exists(dst)
+
+        if kind == "symlink":
+            os.symlink(link_target, dst)
+            continue
+
+        dst.write_bytes(base64.b64decode(data_b64.encode("ascii")))
+        os.chmod(dst, mode)
+
+
+def gen_full() -> None:
+    out = (Path.cwd() / DEFAULT_RESTORE_DIR).resolve()
+    # In notebooks, IPython injects argv like: -f /path/to/kernel.json.
+    # We ignore flag-looking args and only accept a direct positional path.
+    if len(sys.argv) > 1:
+        first = sys.argv[1]
+        if not first.startswith("-"):
+            out = Path(first).resolve()
+    restore(out)
+    print(f"Restored {len(ENTRIES)} entries into: {out}")
+"""
+
+with open(tmp_name, "w", encoding="utf-8", newline="\n") as f:
+    f.write(header)
+    f.write(f"DEFAULT_RESTORE_DIR = {repo_root.name!r}\n\n")
+    f.write("ENTRIES = [\n")
+
+    for kind, rel_path, link_target, mode, data_b64 in entries:
+        if kind == "symlink":
+            f.write(f"    ('symlink', {rel_path!r}, {link_target!r}, None, None),\n")
+        else:
+            f.write(f"    ('file', {rel_path!r}, None, {mode}, {data_b64!r}),\n")
+
+    f.write("]\n\n")
+    f.write("gen_full()\n")
+
+os.chmod(tmp_name, 0o755)
+tmp_path = Path(tmp_name)
+should_overwrite = True
+
+if out_abs.exists() and out_abs.is_file():
+    should_overwrite = out_abs.read_bytes() != tmp_path.read_bytes()
+
+if should_overwrite:
+    os.replace(tmp_name, out_abs)
+    print(f"Generated: {out_abs}")
+else:
+    tmp_path.unlink()
+    print(f"Unchanged: {out_abs}")
+
+print(f"Included regular files: {file_count}")
+print(f"Included symlinks: {link_count}")
+if out_skip:
+    print(f"Excluded output script path from snapshot: {out_skip}")
+PY
+fi
+
+echo "[2/3] Preparing Kaggle upload folders -> $UPLOAD_ROOT_ABS"
+mkdir -p "$UPLOAD_ROOT_ABS"
+
+# Clean legacy monolithic upload layout from older script versions.
+LEGACY_DATASET_DIR="$UPLOAD_ROOT_ABS/$REPO_SLUG"
+if [[ -d "$LEGACY_DATASET_DIR" ]]; then
+  echo "Cleaning legacy upload folder: $LEGACY_DATASET_DIR"
+  rm -rf "$LEGACY_DATASET_DIR"
+fi
+
+for artifact in "${SELECTED_ARTIFACTS[@]}"; do
+  artifact_slug="${REPO_SLUG}-${artifact}"
+  artifact_dir="$UPLOAD_ROOT_ABS/$artifact_slug"
+  metadata_path="$artifact_dir/dataset-metadata.json"
+  mkdir -p "$artifact_dir"
+
+  # Clean stale generated entries from previous runs/layouts.
+  rm -rf "$artifact_dir/checkpoints" "$artifact_dir/datasets" "$artifact_dir/models"
+  rm -f "$artifact_dir/upload-dataset.sh"
+  # Keep wheelhouse artifact file in its own dataset folder to avoid unnecessary rebuilds.
+  if [[ "$artifact" != "wheelhouse" ]]; then
+    rm -f "$artifact_dir/wheelhouse.zip"
+  fi
+
+  if [[ "$artifact" != "wheelhouse" ]]; then
+    src="$REPO_ROOT/$artifact"
+    dst="$artifact_dir/$artifact"
+    if [[ ! -e "$src" ]]; then
+      echo "Warning: missing artifact path '$src' (skipping link)" >&2
+      rm -f "$dst"
+    else
+      ln -sfn "$src" "$dst"
+    fi
+  fi
+
+  python3 - "$metadata_path" "$REPO_NAME" "$KAGGLE_USERNAME" "$artifact_slug" "$artifact" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+metadata_path = Path(sys.argv[1])
+repo_name = sys.argv[2]
+kaggle_username = sys.argv[3]
+dataset_slug = sys.argv[4]
+artifact = sys.argv[5]
+
+metadata = {
+    "title": f"{repo_name} {artifact}",
+    "id": f"{kaggle_username}/{dataset_slug}",
+    "licenses": [{"name": "other"}],
+    "description": (
+        f"Artifact dataset for '{repo_name}': {artifact}. "
+        "Managed by make-gen-full-repo.sh and upload-dataset.sh."
+    ),
+}
+
+metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+PY
+
+  rm -f "$artifact_dir/upload-dataset.sh"
+done
+
+echo "[3/3] Done"
+if [[ "$SKIP_GEN" -eq 1 ]]; then
+  echo "Snapshot script: (skipped)"
+else
+  echo "Snapshot script: $OUT_ABS"
+fi
+echo "Wheelhouse zip target (built at upload time): $WHEELHOUSE_ABS"
+echo "Kaggle upload root: $UPLOAD_ROOT_ABS"
+for artifact in "${SELECTED_ARTIFACTS[@]}"; do
+  echo " - $UPLOAD_ROOT_ABS/${REPO_SLUG}-${artifact}"
+done

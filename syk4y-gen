@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  syk4y gen [--repo-root DIR] [options]
+
+Options:
+  -o, --out FILE         Output snapshot path (default: gen-full-repo.py)
+  -u, --upload-dir DIR   Upload root (default: kaggle_upload under repo root)
+  -w, --wheelhouse FILE  Wheelhouse archive filename/path (default: wheelhouse.zip)
+  -h, --help             Show this help
+USAGE
+}
+
+repo_root="$(pwd)"
+if [[ $# -gt 0 ]] && [[ "$1" == "--repo-root" ]]; then
+  if [[ $# -lt 2 ]]; then
+    echo "Missing value for --repo-root" >&2
+    exit 2
+  fi
+  repo_root="$2"
+  shift 2
+fi
+
+args=(--repo-root "$repo_root")
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--out|-u|--upload-dir|-w|--wheelhouse)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      args+=("$1" "$2")
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown gen option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+exec "$SCRIPT_DIR/syk4y-gen-scaffold" "${args[@]}"
