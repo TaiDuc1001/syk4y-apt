@@ -13,7 +13,7 @@ SELECTED_ARTIFACTS=()
 
 usage() {
   cat <<'USAGE'
-Generate repo snapshot script and prepare split Kaggle upload artifact folders.
+Generate repo snapshot script; optionally initialize split Kaggle upload artifact folders.
 
 Usage:
   syk4y gen [options]
@@ -21,9 +21,9 @@ Usage:
 Options:
   --repo-root DIR        Target repository root (default: git root, or CWD with --skip-gen)
   --skip-gen             Skip generating gen-full-repo.py and only setup Kaggle upload folders
-  -a, --artifact NAME    Artifact to scaffold (repeatable).
+  -a, --artifact NAME    Artifact to initialize (repeatable).
                          Valid: checkpoints, datasets, models, wheelhouse.
-                         Default: all artifacts.
+                         Default: none (no upload-folder initialization).
   -o, --out FILE         Output snapshot script path (default: gen-full-repo.py)
   -w, --wheelhouse FILE  Wheelhouse archive name/path (default: wheelhouse.zip in upload dataset folder)
   -u, --upload-dir DIR   Kaggle upload root directory (default: kaggle_upload)
@@ -270,9 +270,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "${#SELECTED_ARTIFACTS[@]}" -eq 0 ]]; then
-  SELECTED_ARTIFACTS=("${ALL_ARTIFACTS[@]}")
-else
+if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
   declare -A seen_artifacts=()
   normalized_artifacts=()
   for artifact in "${SELECTED_ARTIFACTS[@]}"; do
@@ -319,12 +317,20 @@ if [[ "$SKIP_GEN" -eq 0 ]]; then
   REPO_ROOT="$GIT_ROOT"
 fi
 
+if [[ "$SKIP_GEN" -eq 1 ]] && [[ "${#SELECTED_ARTIFACTS[@]}" -eq 0 ]]; then
+  echo "Error: nothing to do. Use -a/--artifact to initialize upload artifact folders, or run without --skip-gen to generate snapshot script." >&2
+  exit 2
+fi
+
 cd "$REPO_ROOT"
 
 REPO_NAME="$(basename "$REPO_ROOT")"
 REPO_SLUG="$(slugify "$REPO_NAME")"
 PYTHON_BIN="$(resolve_python_bin "$REPO_ROOT")"
-KAGGLE_USERNAME="$(resolve_kaggle_username)"
+KAGGLE_USERNAME=""
+if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
+  KAGGLE_USERNAME="$(resolve_kaggle_username)"
+fi
 
 if [[ "$OUT_FILE" == /* ]]; then
   OUT_ABS="$OUT_FILE"
@@ -332,18 +338,20 @@ else
   OUT_ABS="$REPO_ROOT/$OUT_FILE"
 fi
 
-if [[ "$UPLOAD_ROOT" == /* ]]; then
-  UPLOAD_ROOT_ABS="$UPLOAD_ROOT"
-else
-  UPLOAD_ROOT_ABS="$REPO_ROOT/$UPLOAD_ROOT"
-fi
+if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
+  if [[ "$UPLOAD_ROOT" == /* ]]; then
+    UPLOAD_ROOT_ABS="$UPLOAD_ROOT"
+  else
+    UPLOAD_ROOT_ABS="$REPO_ROOT/$UPLOAD_ROOT"
+  fi
 
-WHEELHOUSE_DATASET_DIR="$UPLOAD_ROOT_ABS/${REPO_SLUG}-wheelhouse"
+  WHEELHOUSE_DATASET_DIR="$UPLOAD_ROOT_ABS/${REPO_SLUG}-wheelhouse"
 
-if [[ "$WHEELHOUSE_FILE" == /* ]]; then
-  WHEELHOUSE_ABS="$WHEELHOUSE_FILE"
-else
-  WHEELHOUSE_ABS="$WHEELHOUSE_DATASET_DIR/$WHEELHOUSE_FILE"
+  if [[ "$WHEELHOUSE_FILE" == /* ]]; then
+    WHEELHOUSE_ABS="$WHEELHOUSE_FILE"
+  else
+    WHEELHOUSE_ABS="$WHEELHOUSE_DATASET_DIR/$WHEELHOUSE_FILE"
+  fi
 fi
 
 if [[ "$SKIP_GEN" -eq 0 ]]; then
@@ -486,50 +494,51 @@ if out_skip:
 PY
 fi
 
-mkdir -p "$UPLOAD_ROOT_ABS"
-echo "Initialized Kaggle upload scaffolding:"
-echo "  upload root: $UPLOAD_ROOT_ABS"
+if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
+  mkdir -p "$UPLOAD_ROOT_ABS"
+  echo "Initialized Kaggle upload folders:"
+  echo "  upload root: $UPLOAD_ROOT_ABS"
 
-# Clean legacy monolithic upload layout from older script versions.
-LEGACY_DATASET_DIR="$UPLOAD_ROOT_ABS/$REPO_SLUG"
-if [[ -d "$LEGACY_DATASET_DIR" ]]; then
-  echo "  removed legacy folder: $LEGACY_DATASET_DIR"
-  rm -rf "$LEGACY_DATASET_DIR"
-fi
-
-for artifact in "${SELECTED_ARTIFACTS[@]}"; do
-  artifact_slug="${REPO_SLUG}-${artifact}"
-  artifact_dir="$UPLOAD_ROOT_ABS/$artifact_slug"
-  metadata_path="$artifact_dir/dataset-metadata.json"
-  dataset_id="${KAGGLE_USERNAME}/${artifact_slug}"
-  mkdir -p "$artifact_dir"
-  echo "  artifact: $artifact"
-  echo "    dataset id: $dataset_id"
-  echo "    dataset dir: $artifact_dir"
-
-  # Clean stale generated entries from previous runs/layouts.
-  rm -rf "$artifact_dir/checkpoints" "$artifact_dir/datasets" "$artifact_dir/models"
-  rm -f "$artifact_dir/upload-dataset.sh"
-  # Keep wheelhouse artifact file in its own dataset folder to avoid unnecessary rebuilds.
-  if [[ "$artifact" != "wheelhouse" ]]; then
-    rm -f "$artifact_dir/wheelhouse.zip"
+  # Clean legacy monolithic upload layout from older script versions.
+  LEGACY_DATASET_DIR="$UPLOAD_ROOT_ABS/$REPO_SLUG"
+  if [[ -d "$LEGACY_DATASET_DIR" ]]; then
+    echo "  removed legacy folder: $LEGACY_DATASET_DIR"
+    rm -rf "$LEGACY_DATASET_DIR"
   fi
 
-  if [[ "$artifact" != "wheelhouse" ]]; then
-    src="$REPO_ROOT/$artifact"
-    dst="$artifact_dir/$artifact"
-    if [[ ! -e "$src" ]]; then
-      echo "    link: skipped (missing source: $src)" >&2
-      rm -f "$dst"
-    else
-      ln -sfn "$src" "$dst"
-      echo "    link: $dst -> $src"
+  for artifact in "${SELECTED_ARTIFACTS[@]}"; do
+    artifact_slug="${REPO_SLUG}-${artifact}"
+    artifact_dir="$UPLOAD_ROOT_ABS/$artifact_slug"
+    metadata_path="$artifact_dir/dataset-metadata.json"
+    dataset_id="${KAGGLE_USERNAME}/${artifact_slug}"
+    mkdir -p "$artifact_dir"
+    echo "  artifact: $artifact"
+    echo "    dataset id: $dataset_id"
+    echo "    dataset dir: $artifact_dir"
+
+    # Clean stale generated entries from previous runs/layouts.
+    rm -rf "$artifact_dir/checkpoints" "$artifact_dir/datasets" "$artifact_dir/models"
+    rm -f "$artifact_dir/upload-dataset.sh"
+    # Keep wheelhouse artifact file in its own dataset folder to avoid unnecessary rebuilds.
+    if [[ "$artifact" != "wheelhouse" ]]; then
+      rm -f "$artifact_dir/wheelhouse.zip"
     fi
-  else
-    build_wheelhouse_for_init
-  fi
 
-  "$PYTHON_BIN" - "$metadata_path" "$REPO_NAME" "$KAGGLE_USERNAME" "$artifact_slug" "$artifact" <<'PY'
+    if [[ "$artifact" != "wheelhouse" ]]; then
+      src="$REPO_ROOT/$artifact"
+      dst="$artifact_dir/$artifact"
+      if [[ ! -e "$src" ]]; then
+        echo "    link: skipped (missing source: $src)" >&2
+        rm -f "$dst"
+      else
+        ln -sfn "$src" "$dst"
+        echo "    link: $dst -> $src"
+      fi
+    else
+      build_wheelhouse_for_init
+    fi
+
+    "$PYTHON_BIN" - "$metadata_path" "$REPO_NAME" "$KAGGLE_USERNAME" "$artifact_slug" "$artifact" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -552,10 +561,10 @@ metadata = {
 
 metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 PY
-
-  rm -f "$artifact_dir/upload-dataset.sh"
-  echo "    metadata: $metadata_path"
-done
+    rm -f "$artifact_dir/upload-dataset.sh"
+    echo "    metadata: $metadata_path"
+  done
+fi
 
 if [[ "$SKIP_GEN" -eq 0 ]]; then
   echo "  snapshot script: $OUT_ABS"
