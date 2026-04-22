@@ -50,6 +50,7 @@ gpg --armor --export-secret-keys <KEY_ID> > /tmp/syk4y-private.asc
 4. Add GitHub repository secrets:
 - `APT_GPG_PRIVATE_KEY`: content of `/tmp/syk4y-private.asc`
 - `APT_GPG_PASSPHRASE`: key passphrase (empty if no passphrase)
+- `PAGES_ENABLEMENT_TOKEN` (optional but recommended): classic PAT with `repo` scope or fine-grained PAT with Pages write/admin, used once to auto-enable Pages via workflow
 
 Public key is committed in this repo at:
 - `keys/syk4y-archive-keyring.gpg`
@@ -58,6 +59,7 @@ Public key is committed in this repo at:
 ## Release flow
 
 - Push commit to `main` (no manual tag required)
+- One-time repo setting: `Settings -> Pages -> Source = GitHub Actions` (if not using `PAGES_ENABLEMENT_TOKEN`)
 - GitHub Actions will:
   1. Build `syk4y_<auto-version>_all.deb`
   2. Build static APT repo metadata (`dists/`, `pool/`)

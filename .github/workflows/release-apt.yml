@@ -163,7 +163,15 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Configure GitHub Pages (auto-enable)
+        if: ${{ secrets.PAGES_ENABLEMENT_TOKEN != '' }}
+        uses: actions/configure-pages@v5
+        with:
+          token: ${{ secrets.PAGES_ENABLEMENT_TOKEN }}
+          enablement: true
+
       - name: Configure GitHub Pages
+        if: ${{ secrets.PAGES_ENABLEMENT_TOKEN == '' }}
         uses: actions/configure-pages@v5
 
       - name: Deploy to GitHub Pages
