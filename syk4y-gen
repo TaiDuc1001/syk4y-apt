@@ -7,7 +7,6 @@ OUT_FILE=""
 OUT_FILE_EXPLICIT=0
 WHEELHOUSE_FILE="wheelhouse.zip"
 UPLOAD_ROOT="kaggle_upload"
-ALL_ARTIFACTS=(checkpoints datasets models wheelhouse)
 REPO_ROOT_OVERRIDE=""
 SKIP_GEN=0
 SELECTED_ARTIFACTS=()
@@ -23,7 +22,8 @@ Options:
   --repo-root DIR        Target repository root (default: git root, or CWD with --skip-gen)
   --skip-gen             Skip generating gen-full.py and only setup Kaggle upload folders
   -a, --artifact NAME    Artifact to initialize (repeatable).
-                         Valid: checkpoints, datasets, models, wheelhouse.
+                         Any artifact path is allowed.
+                         Special case: 'wheelhouse' triggers wheelhouse build flow.
                          Default: none (no upload-folder initialization).
   -o, --out FILE         Output snapshot script path (default: <upload-dir>/gen-full.py)
   -w, --wheelhouse FILE  Wheelhouse archive name/path (default: wheelhouse.zip in upload dataset folder)
@@ -180,17 +180,6 @@ resolve_python_bin() {
   exit 1
 }
 
-is_valid_artifact() {
-  case "$1" in
-    checkpoints|datasets|models|wheelhouse)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 build_wheelhouse_for_init() {
   local tmp_root tmp_upload_root tmp_wheelhouse_path
   tmp_root="${SYK4Y_WHEELHOUSE_TMP_ROOT:-/tmp/syk4y-wheelhouse-cache}"
@@ -278,14 +267,22 @@ fi
 
 if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
   declare -A seen_artifacts=()
+  declare -A artifact_slug_owner=()
   normalized_artifacts=()
   for artifact in "${SELECTED_ARTIFACTS[@]}"; do
-    if ! is_valid_artifact "$artifact"; then
-      echo "Error: invalid artifact '$artifact'. Valid values: checkpoints, datasets, models, wheelhouse." >&2
+    if [[ -z "$artifact" ]]; then
+      echo "Error: artifact name cannot be empty." >&2
       exit 2
     fi
     if [[ -z "${seen_artifacts[$artifact]+x}" ]]; then
+      artifact_slug="$(slugify "$artifact")"
+      if [[ -n "${artifact_slug_owner[$artifact_slug]+x}" ]] && [[ "${artifact_slug_owner[$artifact_slug]}" != "$artifact" ]]; then
+        echo "Error: artifact slug collision between '${artifact_slug_owner[$artifact_slug]}' and '$artifact' (slug: '$artifact_slug')." >&2
+        echo "Use distinct artifact names that slugify uniquely." >&2
+        exit 2
+      fi
       seen_artifacts["$artifact"]=1
+      artifact_slug_owner["$artifact_slug"]="$artifact"
       normalized_artifacts+=("$artifact")
     fi
   done
@@ -798,26 +795,34 @@ if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
   fi
 
   for artifact in "${SELECTED_ARTIFACTS[@]}"; do
-    artifact_slug="${REPO_SLUG}-${artifact}"
+    artifact_id="$(slugify "$artifact")"
+    artifact_slug="${REPO_SLUG}-${artifact_id}"
     artifact_dir="$UPLOAD_ROOT_ABS/$artifact_slug"
     metadata_path="$artifact_dir/dataset-metadata.json"
     dataset_id="${KAGGLE_USERNAME}/${artifact_slug}"
     mkdir -p "$artifact_dir"
     echo "  artifact: $artifact"
+    echo "    artifact id: $artifact_id"
     echo "    dataset id: $dataset_id"
     echo "    dataset dir: $artifact_dir"
 
-    # Clean stale generated entries from previous runs/layouts.
-    rm -rf "$artifact_dir/checkpoints" "$artifact_dir/datasets" "$artifact_dir/models"
-    rm -f "$artifact_dir/upload-dataset.sh"
-    # Keep wheelhouse artifact file in its own dataset folder to avoid unnecessary rebuilds.
-    if [[ "$artifact" != "wheelhouse" ]]; then
-      rm -f "$artifact_dir/wheelhouse.zip"
-    fi
+    # Clean stale generated entries while keeping metadata file path stable.
+    find "$artifact_dir" -mindepth 1 -maxdepth 1 ! -name 'dataset-metadata.json' -exec rm -rf {} +
+    artifact_source=""
+    artifact_item_name=""
 
     if [[ "$artifact" != "wheelhouse" ]]; then
-      src="$REPO_ROOT/$artifact"
-      dst="$artifact_dir/$artifact"
+      if [[ "$artifact" == /* ]]; then
+        src="$artifact"
+      else
+        src="$REPO_ROOT/$artifact"
+      fi
+      artifact_source="$artifact"
+      artifact_item_name="$(basename "$artifact")"
+      if [[ -z "$artifact_item_name" ]] || [[ "$artifact_item_name" == "." ]] || [[ "$artifact_item_name" == "/" ]]; then
+        artifact_item_name="$artifact_id"
+      fi
+      dst="$artifact_dir/$artifact_item_name"
       if [[ ! -e "$src" ]]; then
         echo "    link: skipped (missing source: $src)" >&2
         rm -f "$dst"
@@ -826,10 +831,11 @@ if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
         echo "    link: $dst -> $src"
       fi
     else
+      artifact_item_name="wheelhouse.zip"
       build_wheelhouse_for_init
     fi
 
-    "$PYTHON_BIN" - "$metadata_path" "$REPO_NAME" "$KAGGLE_USERNAME" "$artifact_slug" "$artifact" <<'PY'
+    "$PYTHON_BIN" - "$metadata_path" "$REPO_NAME" "$KAGGLE_USERNAME" "$artifact_slug" "$artifact" "$artifact_id" "$artifact_source" "$artifact_item_name" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -839,6 +845,9 @@ repo_name = sys.argv[2]
 kaggle_username = sys.argv[3]
 dataset_slug = sys.argv[4]
 artifact = sys.argv[5]
+artifact_id = sys.argv[6]
+artifact_source = sys.argv[7]
+artifact_item_name = sys.argv[8]
 
 metadata = {
     "title": f"{repo_name} {artifact}",
@@ -848,11 +857,14 @@ metadata = {
         f"Artifact dataset for '{repo_name}': {artifact}. "
         "Managed by syk4y init/upload."
     ),
+    "syk4y_artifact": artifact,
+    "syk4y_artifact_id": artifact_id,
+    "syk4y_source": artifact_source,
+    "syk4y_item_name": artifact_item_name,
 }
 
 metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 PY
-    rm -f "$artifact_dir/upload-dataset.sh"
     echo "    metadata: $metadata_path"
   done
 fi

@@ -380,7 +380,6 @@ fi
 UPLOAD_ROOT="${KAGGLE_UPLOAD_ROOT:-$REPO_ROOT/kaggle_upload}"
 STATE_FILE="$UPLOAD_ROOT/.upload-state.json"
 
-ALL_ARTIFACT_IDS=(checkpoints datasets models wheelhouse)
 ARTIFACT_IDS=()
 
 DIR_MODE="${KAGGLE_DIR_MODE:-zip}"
@@ -414,6 +413,8 @@ WHEELHOUSE_PATH="$WHEELHOUSE_DATASET_DIR/wheelhouse.zip"
 
 declare -A CURRENT_FP
 declare -A CURRENT_META_FP
+declare -A ARTIFACT_SOURCE_SPEC
+declare -A ARTIFACT_ITEM_NAMES
 KAGGLE_CMD=()
 
 resolve_wheelhouse_python() {
@@ -531,11 +532,15 @@ ensure_kaggle_upload_prereqs() {
 
 artifact_item_name() {
   local artifact_id="$1"
-  if [[ "$artifact_id" == "wheelhouse" ]]; then
-    printf '%s\n' "wheelhouse.zip"
-  else
-    printf '%s\n' "$artifact_id"
+  local item_name="${ARTIFACT_ITEM_NAMES[$artifact_id]:-}"
+  if [[ -z "$item_name" ]]; then
+    if [[ "$artifact_id" == "wheelhouse" ]]; then
+      item_name="wheelhouse.zip"
+    else
+      item_name="$artifact_id"
+    fi
   fi
+  printf '%s\n' "$item_name"
 }
 
 artifact_dataset_slug() {
@@ -555,10 +560,16 @@ artifact_metadata_file() {
 
 artifact_source_path() {
   local artifact_id="$1"
+  local source_spec
   if [[ "$artifact_id" == "wheelhouse" ]]; then
     printf '%s\n' "$WHEELHOUSE_PATH"
   else
-    printf '%s\n' "$REPO_ROOT/$artifact_id"
+    source_spec="${ARTIFACT_SOURCE_SPEC[$artifact_id]:-$artifact_id}"
+    if [[ "$source_spec" == /* ]]; then
+      printf '%s\n' "$source_spec"
+    else
+      printf '%s\n' "$REPO_ROOT/$source_spec"
+    fi
   fi
 }
 
@@ -650,19 +661,80 @@ PY
 }
 
 resolve_initialized_artifacts() {
-  local artifact_id metadata_file
+  local artifact_id metadata_file dataset_dir dataset_slug prefix source_spec item_name
+  local -a artifact_settings
+  declare -A seen_artifact_ids=()
   ARTIFACT_IDS=()
+  ARTIFACT_SOURCE_SPEC=()
+  ARTIFACT_ITEM_NAMES=()
+  prefix="${BASE_DATASET_SLUG}-"
 
-  for artifact_id in "${ALL_ARTIFACT_IDS[@]}"; do
-    metadata_file="$(artifact_metadata_file "$artifact_id")"
-    if [[ -f "$metadata_file" ]]; then
-      ARTIFACT_IDS+=("$artifact_id")
+  while IFS= read -r dataset_dir; do
+    dataset_slug="$(basename "$dataset_dir")"
+    artifact_id="${dataset_slug#$prefix}"
+    if [[ -z "$artifact_id" ]]; then
+      continue
     fi
-  done
+    metadata_file="$dataset_dir/dataset-metadata.json"
+    if [[ ! -f "$metadata_file" ]]; then
+      continue
+    fi
+
+    if [[ -n "${seen_artifact_ids[$artifact_id]+x}" ]]; then
+      echo "Error: duplicate initialized artifact id '$artifact_id' under '$UPLOAD_ROOT'." >&2
+      exit 1
+    fi
+    seen_artifact_ids["$artifact_id"]=1
+
+    mapfile -t artifact_settings < <(
+      "$PYTHON_BIN" - "$metadata_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+meta = Path(sys.argv[1])
+try:
+    data = json.loads(meta.read_text(encoding="utf-8"))
+except Exception:
+    print("")
+    print("")
+    raise SystemExit(0)
+
+def clean(v):
+    return v.strip() if isinstance(v, str) else ""
+
+print(clean(data.get("syk4y_source")))
+print(clean(data.get("syk4y_item_name")))
+PY
+    )
+    source_spec="${artifact_settings[0]:-}"
+    item_name="${artifact_settings[1]:-}"
+
+    if [[ "$artifact_id" == "wheelhouse" ]]; then
+      source_spec=""
+      if [[ -z "$item_name" ]]; then
+        item_name="wheelhouse.zip"
+      fi
+    else
+      if [[ -z "$source_spec" ]]; then
+        source_spec="$artifact_id"
+      fi
+      if [[ -z "$item_name" ]]; then
+        item_name="$(basename "$source_spec")"
+      fi
+      if [[ -z "$item_name" ]] || [[ "$item_name" == "." ]] || [[ "$item_name" == "/" ]]; then
+        item_name="$artifact_id"
+      fi
+    fi
+
+    ARTIFACT_IDS+=("$artifact_id")
+    ARTIFACT_SOURCE_SPEC["$artifact_id"]="$source_spec"
+    ARTIFACT_ITEM_NAMES["$artifact_id"]="$item_name"
+  done < <(find "$UPLOAD_ROOT" -mindepth 1 -maxdepth 1 -type d -name "${BASE_DATASET_SLUG}-*" -printf '%p\n' 2>/dev/null | LC_ALL=C sort)
 
   if [[ "${#ARTIFACT_IDS[@]}" -eq 0 ]]; then
     echo "Error: no initialized artifacts found under '$UPLOAD_ROOT'." >&2
-    echo "Run: syk4y init <checkpoints|datasets|models|wheelhouse> first." >&2
+    echo "Run: syk4y init <artifact...> first." >&2
     exit 1
   fi
 
@@ -870,7 +942,7 @@ PY
 
 verify_dataset_structure() {
   for artifact_id in "${ARTIFACT_IDS[@]}"; do
-    local dataset_dir metadata_file
+    local dataset_dir metadata_file item_name
     dataset_dir="$(artifact_dataset_dir "$artifact_id")"
     metadata_file="$(artifact_metadata_file "$artifact_id")"
     if [[ ! -f "$metadata_file" ]]; then
@@ -886,7 +958,8 @@ verify_dataset_structure() {
       continue
     fi
 
-    local path="$dataset_dir/$artifact_id"
+    item_name="$(artifact_item_name "$artifact_id")"
+    local path="$dataset_dir/$item_name"
     if [[ ! -e "$path" ]]; then
       echo "Error: missing artifact link '$path'. Run ./make-gen-full-repo.sh first." >&2
       exit 1

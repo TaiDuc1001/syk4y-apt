@@ -14,7 +14,9 @@ Options:
   -h, --help             Show this help
 
 Artifacts:
-  checkpoints | datasets | models | wheelhouse
+  Any folder/file path under repo root, or absolute path.
+  For non-'wheelhouse' artifacts, path must already exist (file, directory, or symlink).
+  Special case: artifact name exactly 'wheelhouse' triggers wheelhouse build flow.
 
 Wheelhouse Artifact Notes:
   - When 'wheelhouse' is included, syk4y builds/updates wheelhouse.zip from the current Python environment.
@@ -41,6 +43,11 @@ fi
 
 args=(--repo-root "$repo_root" --skip-gen)
 artifacts=()
+
+if ! repo_root_abs="$(cd "$repo_root" 2>/dev/null && pwd)"; then
+  echo "Error: invalid --repo-root '$repo_root'." >&2
+  exit 2
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,21 +83,33 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "${#artifacts[@]}" -eq 0 ]]; then
-  echo "Error: init requires at least one artifact: checkpoints|datasets|models|wheelhouse." >&2
+  echo "Error: init requires at least one artifact." >&2
   usage >&2
   exit 2
 fi
 
 for artifact in "${artifacts[@]}"; do
-  case "$artifact" in
-    checkpoints|datasets|models|wheelhouse)
-      args+=(--artifact "$artifact")
-      ;;
-    *)
-      echo "Error: invalid artifact '$artifact'. Valid values: checkpoints, datasets, models, wheelhouse." >&2
+  artifact_path=""
+  if [[ -z "$artifact" ]]; then
+    echo "Error: artifact name cannot be empty." >&2
+    exit 2
+  fi
+  if [[ "$artifact" != "wheelhouse" ]]; then
+    if [[ "$artifact" == /* ]]; then
+      artifact_path="$artifact"
+    else
+      artifact_path="$repo_root_abs/$artifact"
+    fi
+    if [[ ! -e "$artifact_path" && ! -L "$artifact_path" ]]; then
+      echo "Error: artifact '$artifact' does not exist (resolved: $artifact_path)." >&2
       exit 2
-      ;;
-  esac
+    fi
+    if [[ ! -f "$artifact_path" && ! -d "$artifact_path" && ! -L "$artifact_path" ]]; then
+      echo "Error: artifact '$artifact' must be a file, directory, or symlink (resolved: $artifact_path)." >&2
+      exit 2
+    fi
+  fi
+  args+=(--artifact "$artifact")
 done
 
 exec "$SCRIPT_DIR/syk4y-gen" "${args[@]}"
