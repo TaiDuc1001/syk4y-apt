@@ -527,11 +527,8 @@ def _xz_compress(data: bytes) -> bytes:
     return lzma.compress(data, preset=(9 | lzma.PRESET_EXTREME))
 
 
-def _write_wrapped_b64(f, value: str, width: int = 88) -> None:
-    f.write("PAYLOAD_B64 = (\n")
-    for idx in range(0, len(value), width):
-        f.write(f"    {value[idx:idx + width]!r}\n")
-    f.write(")\n\n")
+def _write_wrapped_b64(f, value: str) -> None:
+    f.write(f"PAYLOAD_B64 = {value!r}\n\n")
 
 
 raw_paths = subprocess.check_output(
