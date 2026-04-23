@@ -363,12 +363,28 @@ fi
 if [[ "$SKIP_GEN" -eq 0 ]]; then
   "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_ABS" <<'PY'
 import base64
+import hashlib
+import io
+import json
+import lzma
 import os
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
+
+FORMAT_VERSION = 2
+MANIFEST_VERSION = 1
+PAYLOAD_CODEC = "lzma/xz"
+CODEC = {"name": PAYLOAD_CODEC, "dictionary": None}
+
+CHUNK_FILE_MIN_BYTES = 4096
+CHUNK_MIN_BYTES = 2048
+CHUNK_TARGET_BITS = 13  # ~8KiB average
+CHUNK_MAX_BYTES = 16384
+CHUNK_BOUNDARY_MASK = (1 << CHUNK_TARGET_BITS) - 1
 
 repo_root = Path(sys.argv[1]).resolve(strict=False)
 out_abs = Path(sys.argv[2]).resolve(strict=False)
@@ -380,6 +396,146 @@ try:
     out_skip = out_abs.relative_to(repo_root).as_posix()
 except ValueError:
     out_skip = None
+
+
+def _encode_text_b64(value: str) -> str:
+    return base64.b64encode(value.encode("utf-8", "surrogateescape")).decode("ascii")
+
+
+def _stable_tarinfo(name: str, mode: int, size: int = 0, *, typeflag: bytes = tarfile.REGTYPE, linkname: str = "") -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name=name)
+    info.mode = mode
+    info.mtime = 0
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    info.type = typeflag
+    info.size = size
+    if typeflag == tarfile.SYMTYPE:
+        info.linkname = linkname
+    return info
+
+
+def _build_tar_bundle(entries) -> bytes:
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as tf:
+        for entry in entries:
+            rel_path = entry["path"]
+            kind = entry["kind"]
+            if kind == "symlink":
+                info = _stable_tarinfo(rel_path, 0o777, 0, typeflag=tarfile.SYMTYPE, linkname=entry["target"])
+                tf.addfile(info)
+                continue
+
+            data = entry["data"]
+            info = _stable_tarinfo(rel_path, entry["mode"], len(data))
+            tf.addfile(info, io.BytesIO(data))
+    return out.getvalue()
+
+
+def _chunk_content_defined(data: bytes):
+    if len(data) <= CHUNK_MIN_BYTES:
+        return [data]
+
+    chunks = []
+    start = 0
+    rolling = 0
+
+    for idx, byte in enumerate(data):
+        rolling = ((rolling << 5) ^ (rolling >> 2) ^ byte) & 0xFFFFFFFF
+        cur_size = idx - start + 1
+        if cur_size < CHUNK_MIN_BYTES:
+            continue
+        if (rolling & CHUNK_BOUNDARY_MASK) == 0 or cur_size >= CHUNK_MAX_BYTES:
+            chunks.append(data[start : idx + 1])
+            start = idx + 1
+            rolling = 0
+
+    if start < len(data):
+        chunks.append(data[start:])
+
+    return chunks if chunks else [data]
+
+
+def _build_chunkstore_bundle(entries) -> bytes:
+    blobs = {}
+    manifest_entries = []
+
+    for entry in entries:
+        rel_path = entry["path"]
+        path_b64 = _encode_text_b64(rel_path)
+        kind = entry["kind"]
+
+        if kind == "symlink":
+            manifest_entries.append(
+                {
+                    "kind": "symlink",
+                    "path_b64": path_b64,
+                    "target_b64": _encode_text_b64(entry["target"]),
+                }
+            )
+            continue
+
+        mode = entry["mode"]
+        data = entry["data"]
+        if len(data) < CHUNK_FILE_MIN_BYTES:
+            digest = hashlib.sha256(data).hexdigest()
+            blobs.setdefault(digest, data)
+            manifest_entries.append(
+                {"kind": "file", "path_b64": path_b64, "mode": mode, "blob": digest}
+            )
+            continue
+
+        chunks = _chunk_content_defined(data)
+        chunk_ids = []
+        for chunk in chunks:
+            digest = hashlib.sha256(chunk).hexdigest()
+            blobs.setdefault(digest, chunk)
+            chunk_ids.append(digest)
+
+        if len(chunk_ids) <= 1:
+            manifest_entries.append(
+                {"kind": "file", "path_b64": path_b64, "mode": mode, "blob": chunk_ids[0]}
+            )
+        else:
+            manifest_entries.append(
+                {
+                    "kind": "chunked-file",
+                    "path_b64": path_b64,
+                    "mode": mode,
+                    "chunks": chunk_ids,
+                }
+            )
+
+    manifest = {
+        "format_version": MANIFEST_VERSION,
+        "codec": CODEC,
+        "entries": manifest_entries,
+    }
+    manifest_bytes = json.dumps(
+        manifest, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as tf:
+        tf.addfile(_stable_tarinfo("manifest.json", 0o644, len(manifest_bytes)), io.BytesIO(manifest_bytes))
+        for digest in sorted(blobs):
+            blob = blobs[digest]
+            tf.addfile(_stable_tarinfo(f"blobs/{digest}", 0o644, len(blob)), io.BytesIO(blob))
+    return out.getvalue()
+
+
+def _xz_compress(data: bytes) -> bytes:
+    return lzma.compress(data, preset=(9 | lzma.PRESET_EXTREME))
+
+
+def _write_wrapped_b64(f, value: str, width: int = 88) -> None:
+    f.write("PAYLOAD_B64 = (\n")
+    for idx in range(0, len(value), width):
+        f.write(f"    {value[idx:idx + width]!r}\n")
+    f.write(")\n\n")
+
 
 raw_paths = subprocess.check_output(
     [
@@ -408,7 +564,7 @@ for rel_path in paths:
     full_path = repo_root / rel_path
 
     if full_path.is_symlink():
-        entries.append(("symlink", rel_path, os.readlink(full_path), None, None))
+        entries.append({"kind": "symlink", "path": rel_path, "target": os.readlink(full_path)})
         link_count += 1
         continue
 
@@ -416,18 +572,37 @@ for rel_path in paths:
         continue
 
     mode = stat.S_IMODE(full_path.stat().st_mode)
-    data_b64 = base64.b64encode(full_path.read_bytes()).decode("ascii")
-    entries.append(("file", rel_path, None, mode, data_b64))
+    entries.append({"kind": "file", "path": rel_path, "mode": mode, "data": full_path.read_bytes()})
     file_count += 1
+
+bundle_tar = _build_tar_bundle(entries)
+chunkstore_tar = _build_chunkstore_bundle(entries)
+
+bundle_payload = _xz_compress(bundle_tar)
+chunkstore_payload = _xz_compress(chunkstore_tar)
+
+if len(chunkstore_payload) < len(bundle_payload):
+    payload_kind = "chunkstore-tar-v1"
+    payload = chunkstore_payload
+else:
+    payload_kind = "bundle-tar-v1"
+    payload = bundle_payload
+
+payload_b64 = base64.b64encode(payload).decode("ascii")
 
 tmp_fd, tmp_name = tempfile.mkstemp(prefix=f"{out_abs.name}.", suffix=".tmp", dir=str(out_abs.parent))
 os.close(tmp_fd)
 
 header = """# GEN CODE SCRIPT
 import base64
+import hashlib
+import io
+import json
+import lzma
 import os
 import shutil
 import sys
+import tarfile
 from pathlib import Path
 
 
@@ -438,20 +613,127 @@ def _remove_if_exists(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def restore(target_dir: Path) -> None:
-    target_dir.mkdir(parents=True, exist_ok=True)
+def _decode_text_b64(value: str) -> str:
+    return base64.b64decode(value.encode("ascii")).decode("utf-8", "surrogateescape")
 
-    for kind, rel_path, link_target, mode, data_b64 in ENTRIES:
+
+def _decode_payload() -> bytes:
+    if CODEC.get("dictionary") is not None:
+        raise ValueError("Unsupported payload dictionary in this restore script.")
+    if CODEC.get("name") != "lzma/xz":
+        raise ValueError(f"Unsupported payload codec: {CODEC.get('name')!r}")
+    raw = base64.b64decode(PAYLOAD_B64.encode("ascii"))
+    return lzma.decompress(raw)
+
+
+def _restore_bundle(payload: bytes, target_dir: Path) -> int:
+    restored = 0
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as tf:
+        for member in tf:
+            if member.isdir():
+                continue
+            rel_path = member.name
+            dst = target_dir / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _remove_if_exists(dst)
+
+            if member.issym():
+                os.symlink(member.linkname, dst)
+                restored += 1
+                continue
+
+            if not member.isfile():
+                continue
+
+            src = tf.extractfile(member)
+            if src is None:
+                raise ValueError(f"Unable to extract payload member: {member.name}")
+            dst.write_bytes(src.read())
+            os.chmod(dst, member.mode)
+            restored += 1
+    return restored
+
+
+def _restore_chunkstore(payload: bytes, target_dir: Path) -> int:
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as tf:
+        members = {m.name: m for m in tf.getmembers()}
+        manifest_member = members.get("manifest.json")
+        if manifest_member is None:
+            raise ValueError("chunkstore payload is missing manifest.json")
+        manifest_raw = tf.extractfile(manifest_member)
+        if manifest_raw is None:
+            raise ValueError("Unable to read manifest.json from chunkstore payload")
+        manifest = json.loads(manifest_raw.read().decode("utf-8"))
+        if manifest.get("format_version") != 1:
+            raise ValueError(
+                f"Unsupported chunkstore manifest version: {manifest.get('format_version')!r}"
+            )
+        manifest_codec = manifest.get("codec", {})
+        if manifest_codec.get("name") != CODEC.get("name"):
+            raise ValueError("Payload codec metadata mismatch.")
+
+        blobs = {}
+        for name, member in members.items():
+            if not name.startswith("blobs/") or not member.isfile():
+                continue
+            digest = name.split("/", 1)[1]
+            raw_blob = tf.extractfile(member)
+            if raw_blob is None:
+                raise ValueError(f"Unable to read blob payload: {name}")
+            blob = raw_blob.read()
+            if hashlib.sha256(blob).hexdigest() != digest:
+                raise ValueError(f"Blob digest mismatch for {digest}")
+            blobs[digest] = blob
+
+    restored = 0
+    for entry in manifest.get("entries", []):
+        kind = entry.get("kind")
+        rel_path = _decode_text_b64(entry["path_b64"])
         dst = target_dir / rel_path
         dst.parent.mkdir(parents=True, exist_ok=True)
         _remove_if_exists(dst)
 
         if kind == "symlink":
-            os.symlink(link_target, dst)
+            os.symlink(_decode_text_b64(entry["target_b64"]), dst)
+            restored += 1
             continue
 
-        dst.write_bytes(base64.b64decode(data_b64.encode("ascii")))
-        os.chmod(dst, mode)
+        mode = entry["mode"]
+        if kind == "file":
+            digest = entry["blob"]
+            blob = blobs.get(digest)
+            if blob is None:
+                raise ValueError(f"Missing blob: {digest}")
+            dst.write_bytes(blob)
+            os.chmod(dst, mode)
+            restored += 1
+            continue
+
+        if kind == "chunked-file":
+            with open(dst, "wb") as out_f:
+                for digest in entry.get("chunks", []):
+                    blob = blobs.get(digest)
+                    if blob is None:
+                        raise ValueError(f"Missing chunk blob: {digest}")
+                    out_f.write(blob)
+            os.chmod(dst, mode)
+            restored += 1
+            continue
+
+        raise ValueError(f"Unknown chunkstore entry kind: {kind!r}")
+    return restored
+
+
+def restore(target_dir: Path) -> int:
+    if FORMAT_VERSION != 2:
+        raise ValueError(f"Unsupported snapshot format version: {FORMAT_VERSION!r}")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    payload = _decode_payload()
+    if PAYLOAD_KIND == "bundle-tar-v1":
+        return _restore_bundle(payload, target_dir)
+    if PAYLOAD_KIND == "chunkstore-tar-v1":
+        return _restore_chunkstore(payload, target_dir)
+    raise ValueError(f"Unsupported payload kind: {PAYLOAD_KIND!r}")
 
 
 def gen_full() -> None:
@@ -462,22 +744,18 @@ def gen_full() -> None:
         first = sys.argv[1]
         if not first.startswith("-"):
             out = Path(first).resolve()
-    restore(out)
-    print(f"Restored {len(ENTRIES)} entries into: {out}")
+    restored = restore(out)
+    print(f"Restored {restored} entries into: {out}")
 """
 
 with open(tmp_name, "w", encoding="utf-8", newline="\n") as f:
     f.write(header)
-    f.write(f"DEFAULT_RESTORE_DIR = {repo_root.name!r}\n\n")
-    f.write("ENTRIES = [\n")
-
-    for kind, rel_path, link_target, mode, data_b64 in entries:
-        if kind == "symlink":
-            f.write(f"    ('symlink', {rel_path!r}, {link_target!r}, None, None),\n")
-        else:
-            f.write(f"    ('file', {rel_path!r}, None, {mode}, {data_b64!r}),\n")
-
-    f.write("]\n\n")
+    f.write(f"FORMAT_VERSION = {FORMAT_VERSION}\n")
+    f.write(f"DEFAULT_RESTORE_DIR = {repo_root.name!r}\n")
+    f.write(f"PAYLOAD_KIND = {payload_kind!r}\n")
+    f.write(f"CODEC = {CODEC!r}\n")
+    f.write(f"ENTRY_COUNT = {file_count + link_count}\n\n")
+    _write_wrapped_b64(f, payload_b64)
     f.write("gen_full()\n")
 
 os.chmod(tmp_name, 0o755)
@@ -495,6 +773,13 @@ else:
     print(f"Snapshot script unchanged: {out_abs}")
 
 print(f"Snapshot entries: files={file_count}, symlinks={link_count}")
+print(
+    "Snapshot payload: "
+    f"kind={payload_kind}, "
+    f"bundle_xz_bytes={len(bundle_payload)}, "
+    f"chunkstore_xz_bytes={len(chunkstore_payload)}, "
+    f"selected_base64_bytes={len(payload_b64)}"
+)
 if out_skip:
     print(f"Snapshot excluded output path: {out_skip}")
 PY
