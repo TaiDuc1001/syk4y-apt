@@ -2,17 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/python_env.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_env.sh"
 
 usage() {
-  cat <<'USAGE'
-Usage:
-  syk4y doctor [--repo-root DIR] [options]
-
-Options:
-  -u, --upload-dir DIR   Upload root (default: kaggle_upload under repo root)
-  --json                 Output JSON
-  -h, --help             Show this help
-USAGE
+  cat "$SCRIPT_DIR/templates/syk4y-doctor-usage.txt"
 }
 
 repo_root="$(pwd)"
@@ -74,96 +70,7 @@ has_gen_script=0
 has_upload_script=0
 issues=0
 warnings=0
-
-print_python_install_hint() {
-  cat <<'HINT'
-Hint: install Python with:
-  sudo apt update && sudo apt install -y python3 python3-venv
-or create local venv:
-  uv venv .venv
-HINT
-}
-
-is_python_bin_usable() {
-  local py="$1"
-  if [[ -z "$py" ]]; then
-    return 1
-  fi
-  if [[ "$py" == */* ]]; then
-    [[ -x "$py" ]]
-    return
-  fi
-  command -v "$py" >/dev/null 2>&1
-}
-
-find_repo_venv_python() {
-  local root="$1"
-  local candidate dir_name dir_lc
-  local -a preferred=(.venv venv .env env)
-
-  for dir_name in "${preferred[@]}"; do
-    candidate="$root/$dir_name/bin/python"
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-
-  while IFS= read -r dir_name; do
-    dir_lc="${dir_name,,}"
-    if [[ "$dir_lc" != *venv* ]] && [[ "$dir_lc" != "env" ]] && [[ "$dir_lc" != ".env" ]] && [[ "$dir_lc" != env-* ]] && [[ "$dir_lc" != .env-* ]] && [[ "$dir_lc" != *-env ]]; then
-      continue
-    fi
-    candidate="$root/$dir_name/bin/python"
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | LC_ALL=C sort -u)
-
-  return 1
-}
-
-resolve_python_bin() {
-  local root="$1"
-  local configured="${PYTHON_BIN:-}"
-  local detected=""
-
-  if [[ -n "$configured" ]]; then
-    if is_python_bin_usable "$configured"; then
-      printf '%s\n' "$configured"
-      return 0
-    fi
-    return 1
-  fi
-
-  detected="$(find_repo_venv_python "$root" || true)"
-  if [[ -n "$detected" ]]; then
-    printf '%s\n' "$detected"
-    return 0
-  fi
-
-  if command -v uv >/dev/null 2>&1; then
-    detected="$(uv --directory "$root" python find 2>/dev/null || true)"
-    if is_python_bin_usable "$detected"; then
-      printf '%s\n' "$detected"
-      return 0
-    fi
-  fi
-
-  if command -v python3 >/dev/null 2>&1; then
-    printf '%s\n' "python3"
-    return 0
-  fi
-  if command -v python >/dev/null 2>&1; then
-    printf '%s\n' "python"
-    return 0
-  fi
-
-  return 1
-}
-
-python_bin="$(resolve_python_bin "$repo_root" || true)"
+python_bin="$(syk4y_resolve_python_bin "$repo_root" || true)"
 if [[ -n "$python_bin" ]]; then
   has_python=1
 fi
@@ -198,24 +105,7 @@ if [[ -f "$SCRIPT_DIR/syk4y-kaggle" ]]; then has_upload_script=1; fi
 if [[ -n "${KAGGLE_USERNAME:-}" ]] && [[ -n "${KAGGLE_KEY:-}" ]]; then
   has_kaggle_auth=1
 elif [[ "$has_python" -eq 1 ]]; then
-  if "$python_bin" - <<'PY'
-import json
-from pathlib import Path
-
-cfg = Path.home() / ".kaggle" / "kaggle.json"
-if not cfg.exists():
-    raise SystemExit(1)
-try:
-    data = json.loads(cfg.read_text(encoding="utf-8"))
-except Exception:
-    raise SystemExit(1)
-u = data.get("username", "")
-k = data.get("key", "")
-if isinstance(u, str) and u.strip() and isinstance(k, str) and k.strip():
-    raise SystemExit(0)
-raise SystemExit(1)
-PY
-  then
+  if syk4y_has_kaggle_credentials "$python_bin"; then
     has_kaggle_auth=1
   fi
 fi
@@ -359,7 +249,7 @@ else
     echo "warnings: $warnings"
   fi
   if [[ "$has_python" -eq 0 ]]; then
-    print_python_install_hint
+    syk4y_print_python_install_hint
   fi
 fi
 

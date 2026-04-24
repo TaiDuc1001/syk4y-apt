@@ -1,0 +1,153 @@
+# GEN CODE SCRIPT
+import base64
+import hashlib
+import io
+import json
+import lzma
+import os
+import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+
+def _remove_if_exists(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _decode_text_b64(value: str) -> str:
+    return base64.b64decode(value.encode("ascii")).decode("utf-8", "surrogateescape")
+
+
+def _decode_payload() -> bytes:
+    if CODEC.get("dictionary") is not None:
+        raise ValueError("Unsupported payload dictionary in this restore script.")
+    if CODEC.get("name") != "lzma/xz":
+        raise ValueError(f"Unsupported payload codec: {CODEC.get('name')!r}")
+    raw = base64.b64decode(PAYLOAD_B64.encode("ascii"))
+    return lzma.decompress(raw)
+
+
+def _restore_bundle(payload: bytes, target_dir: Path) -> int:
+    restored = 0
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as tf:
+        for member in tf:
+            if member.isdir():
+                continue
+            rel_path = member.name
+            dst = target_dir / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _remove_if_exists(dst)
+
+            if member.issym():
+                os.symlink(member.linkname, dst)
+                restored += 1
+                continue
+
+            if not member.isfile():
+                continue
+
+            src = tf.extractfile(member)
+            if src is None:
+                raise ValueError(f"Unable to extract payload member: {member.name}")
+            dst.write_bytes(src.read())
+            os.chmod(dst, member.mode)
+            restored += 1
+    return restored
+
+
+def _restore_chunkstore(payload: bytes, target_dir: Path) -> int:
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as tf:
+        members = {m.name: m for m in tf.getmembers()}
+        manifest_member = members.get("manifest.json")
+        if manifest_member is None:
+            raise ValueError("chunkstore payload is missing manifest.json")
+        manifest_raw = tf.extractfile(manifest_member)
+        if manifest_raw is None:
+            raise ValueError("Unable to read manifest.json from chunkstore payload")
+        manifest = json.loads(manifest_raw.read().decode("utf-8"))
+        if manifest.get("format_version") != 1:
+            raise ValueError(
+                f"Unsupported chunkstore manifest version: {manifest.get('format_version')!r}"
+            )
+        manifest_codec = manifest.get("codec", {})
+        if manifest_codec.get("name") != CODEC.get("name"):
+            raise ValueError("Payload codec metadata mismatch.")
+
+        blobs = {}
+        for name, member in members.items():
+            if not name.startswith("blobs/") or not member.isfile():
+                continue
+            digest = name.split("/", 1)[1]
+            raw_blob = tf.extractfile(member)
+            if raw_blob is None:
+                raise ValueError(f"Unable to read blob payload: {name}")
+            blob = raw_blob.read()
+            if hashlib.sha256(blob).hexdigest() != digest:
+                raise ValueError(f"Blob digest mismatch for {digest}")
+            blobs[digest] = blob
+
+    restored = 0
+    for entry in manifest.get("entries", []):
+        kind = entry.get("kind")
+        rel_path = _decode_text_b64(entry["path_b64"])
+        dst = target_dir / rel_path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        _remove_if_exists(dst)
+
+        if kind == "symlink":
+            os.symlink(_decode_text_b64(entry["target_b64"]), dst)
+            restored += 1
+            continue
+
+        mode = entry["mode"]
+        if kind == "file":
+            digest = entry["blob"]
+            blob = blobs.get(digest)
+            if blob is None:
+                raise ValueError(f"Missing blob: {digest}")
+            dst.write_bytes(blob)
+            os.chmod(dst, mode)
+            restored += 1
+            continue
+
+        if kind == "chunked-file":
+            with open(dst, "wb") as out_f:
+                for digest in entry.get("chunks", []):
+                    blob = blobs.get(digest)
+                    if blob is None:
+                        raise ValueError(f"Missing chunk blob: {digest}")
+                    out_f.write(blob)
+            os.chmod(dst, mode)
+            restored += 1
+            continue
+
+        raise ValueError(f"Unknown chunkstore entry kind: {kind!r}")
+    return restored
+
+
+def restore(target_dir: Path) -> int:
+    if FORMAT_VERSION != 2:
+        raise ValueError(f"Unsupported snapshot format version: {FORMAT_VERSION!r}")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    payload = _decode_payload()
+    if PAYLOAD_KIND == "bundle-tar-v1":
+        return _restore_bundle(payload, target_dir)
+    if PAYLOAD_KIND == "chunkstore-tar-v1":
+        return _restore_chunkstore(payload, target_dir)
+    raise ValueError(f"Unsupported payload kind: {PAYLOAD_KIND!r}")
+
+
+def gen_full() -> None:
+    out = (Path.cwd() / DEFAULT_RESTORE_DIR).resolve()
+    # In notebooks, IPython injects argv like: -f /path/to/kernel.json.
+    # We ignore flag-looking args and only accept a direct positional path.
+    if len(sys.argv) > 1:
+        first = sys.argv[1]
+        if not first.startswith("-"):
+            out = Path(first).resolve()
+    restored = restore(out)
+    print(f"Restored {restored} entries into: {out}")

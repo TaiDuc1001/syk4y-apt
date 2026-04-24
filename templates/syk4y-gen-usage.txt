@@ -1,0 +1,16 @@
+Generate repo snapshot script; optionally initialize split Kaggle upload artifact folders.
+
+Usage:
+  syk4y gen [options]
+
+Options:
+  --repo-root DIR        Target repository root (default: git root, or CWD with --skip-gen)
+  --skip-gen             Skip generating gen-full.py and only setup Kaggle upload folders
+  -a, --artifact NAME    Artifact to initialize (repeatable).
+                         Any artifact path is allowed.
+                         Special case: 'wheelhouse' triggers wheelhouse build flow.
+                         Default: none (no upload-folder initialization).
+  -o, --out FILE         Output snapshot script path (default: <upload-dir>/gen-full.py)
+  -w, --wheelhouse FILE  Wheelhouse archive name/path (default: wheelhouse.zip in upload dataset folder)
+  -u, --upload-dir DIR   Kaggle upload root directory (default: kaggle_upload)
+  -h, --help             Show this help

@@ -69,9 +69,22 @@ REQUIRED_SCRIPTS=(
   syk4y-doctor
 )
 
+REQUIRED_DIRS=(
+  syk4y-lib
+  syk4y-cli-lib
+  templates
+)
+
 for f in "${REQUIRED_SCRIPTS[@]}"; do
   if [[ ! -f "$ROOT_DIR/$f" ]]; then
     echo "Error: missing required script '$f'." >&2
+    exit 1
+  fi
+done
+
+for d in "${REQUIRED_DIRS[@]}"; do
+  if [[ ! -d "$ROOT_DIR/$d" ]]; then
+    echo "Error: missing required directory '$d'." >&2
     exit 1
   fi
 done
@@ -91,6 +104,10 @@ mkdir -p "$PKG_DIR/DEBIAN" "$PKG_DIR/usr/lib/syk4y" "$PKG_DIR/usr/bin"
 
 for f in "${REQUIRED_SCRIPTS[@]}"; do
   install -m 0755 "$ROOT_DIR/$f" "$PKG_DIR/usr/lib/syk4y/$f"
+done
+
+for d in "${REQUIRED_DIRS[@]}"; do
+  cp -a "$ROOT_DIR/$d" "$PKG_DIR/usr/lib/syk4y/$d"
 done
 
 make_wrapper() {

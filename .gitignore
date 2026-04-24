@@ -1,3 +1,4 @@
 dist/
 site/
 .codex
+__pycache__

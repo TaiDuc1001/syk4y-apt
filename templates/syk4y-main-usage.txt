@@ -1,0 +1,15 @@
+syk4y - Kaggle artifact automation tool
+
+Usage:
+  syk4y [--repo-root DIR] <command> [command options]
+
+Commands:
+  init         Setup Kaggle upload folders/metadata for selected artifacts (no git required)
+  gen          Generate gen-full.py in upload dir (initialize folders only with -a/--artifact)
+  kaggle       Kaggle helpers (login/upload/account/run)
+  doctor       Check environment and repository readiness
+  help         Show this help
+
+Global options:
+  --repo-root DIR   Target repository root (default: current directory)
+  -h, --help        Show this help

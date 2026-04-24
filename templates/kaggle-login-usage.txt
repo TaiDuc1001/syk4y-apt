@@ -1,0 +1,14 @@
+Usage:
+  syk4y kaggle login [--username USERNAME] [--key KEY] [--force] [--non-interactive]
+
+Options:
+  --username USERNAME   Kaggle username
+  --key KEY             Kaggle API key
+  --force               Overwrite existing ~/.kaggle/kaggle.json
+  --non-interactive     Fail instead of prompting for missing values
+  -h, --help            Show this help
+
+If --username/--key are omitted, values are taken from:
+  1) KAGGLE_USERNAME / KAGGLE_KEY env vars
+  2) existing ~/.kaggle/kaggle.json (status only)
+  3) interactive prompt

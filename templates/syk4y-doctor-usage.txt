@@ -1,0 +1,7 @@
+Usage:
+  syk4y doctor [--repo-root DIR] [options]
+
+Options:
+  -u, --upload-dir DIR   Upload root (default: kaggle_upload under repo root)
+  --json                 Output JSON
+  -h, --help             Show this help
