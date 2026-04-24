@@ -175,7 +175,7 @@ def _xz_compress(data: bytes) -> bytes:
 
 
 def _write_wrapped_b64(f, value: str) -> None:
-    f.write(f"PAYLOAD_B64 = {value!r}\\n\\n")
+    f.write(f"PAYLOAD_B64 = {value!r}\n\n")
 
 
 def main() -> int:
@@ -274,11 +274,11 @@ def main() -> int:
 
     with open(tmp_name, "w", encoding="utf-8", newline="\n") as f:
         f.write(header)
-        f.write(f"FORMAT_VERSION = {FORMAT_VERSION}\\n")
-        f.write(f"DEFAULT_RESTORE_DIR = {repo_root.name!r}\\n")
-        f.write(f"PAYLOAD_KIND = {payload_kind!r}\\n")
-        f.write(f"CODEC = {CODEC!r}\\n")
-        f.write(f"ENTRY_COUNT = {file_count + link_count}\\n\\n")
+        f.write(f"FORMAT_VERSION = {FORMAT_VERSION}\n")
+        f.write(f"DEFAULT_RESTORE_DIR = {repo_root.name!r}\n")
+        f.write(f"PAYLOAD_KIND = {payload_kind!r}\n")
+        f.write(f"CODEC = {CODEC!r}\n")
+        f.write(f"ENTRY_COUNT = {file_count + link_count}\n\n")
         _write_wrapped_b64(f, payload_b64)
         f.write("gen_full()\n")
 

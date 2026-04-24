@@ -2,3 +2,4 @@ dist/
 site/
 .codex
 __pycache__
+kaggle_upload/
