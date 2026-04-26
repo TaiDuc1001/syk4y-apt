@@ -22,36 +22,45 @@ upload_single_artifact() {
   local meta_changed="$5"
   local force_reason="$6"
 
-  local item_name source_path metadata_file stage_dir
+  local item_name source_path metadata_file stage_dir upload_status
   item_name="$(artifact_item_name "$artifact_id")"
   source_path="$(artifact_source_path "$artifact_id")"
   metadata_file="$(artifact_metadata_file "$artifact_id")"
   stage_dir="$(mktemp -d "/tmp/kaggle-upload-stage.${artifact_id}.XXXXXX")"
+  upload_status=0
 
-  cleanup_stage_artifact() {
-    rm -rf "$stage_dir"
-  }
-  trap cleanup_stage_artifact RETURN
-
-  cp "$metadata_file" "$stage_dir/dataset-metadata.json"
-  ln -sfn "$source_path" "$stage_dir/$item_name"
-  clear_resume_markers "$stage_dir"
-
-  if [[ "$dataset_exists" -eq 1 ]]; then
-    if [[ -n "$force_reason" ]]; then
-      echo "Forcing '$artifact_id' dataset update: $force_reason"
-    elif [[ "$local_changed" -eq 1 ]]; then
-      echo "Updating '$artifact_id' dataset. Changed artifact: $item_name"
-    elif [[ "$meta_changed" -eq 1 ]]; then
-      echo "Updating '$artifact_id' dataset metadata only."
-    else
-      echo "Updating '$artifact_id' dataset."
-    fi
-    "${KAGGLE_CMD[@]}" datasets version -p "$stage_dir" -m "${VERSION_MESSAGE} [$artifact_id]" -r "$DIR_MODE"
-  else
-    echo "Dataset '$dataset_ref' does not exist yet; creating with artifact '$item_name'."
-    "${KAGGLE_CMD[@]}" datasets create -p "$stage_dir" -r "$DIR_MODE"
+  cp "$metadata_file" "$stage_dir/dataset-metadata.json" || upload_status=$?
+  if [[ "$upload_status" -eq 0 ]]; then
+    ln -sfn "$source_path" "$stage_dir/$item_name" || upload_status=$?
   fi
+  if [[ "$upload_status" -eq 0 ]]; then
+    clear_resume_markers "$stage_dir" || upload_status=$?
+  fi
+
+  if [[ "$upload_status" -eq 0 ]]; then
+    if [[ "$dataset_exists" -eq 1 ]]; then
+      if [[ -n "$force_reason" ]]; then
+        echo "Forcing '$artifact_id' dataset update: $force_reason"
+      elif [[ "$local_changed" -eq 1 ]]; then
+        echo "Updating '$artifact_id' dataset. Changed artifact: $item_name"
+      elif [[ "$meta_changed" -eq 1 ]]; then
+        echo "Updating '$artifact_id' dataset metadata only."
+      else
+        echo "Updating '$artifact_id' dataset."
+      fi
+      "${KAGGLE_CMD[@]}" datasets version -p "$stage_dir" -m "${VERSION_MESSAGE} [$artifact_id]" -r "$DIR_MODE" || upload_status=$?
+    else
+      echo "Dataset '$dataset_ref' does not exist yet; creating with artifact '$item_name'."
+      "${KAGGLE_CMD[@]}" datasets create -p "$stage_dir" -r "$DIR_MODE" || upload_status=$?
+    fi
+  fi
+
+  if [[ "$upload_status" -eq 0 ]]; then
+    echo "Uploaded artifact source path: $source_path"
+  fi
+
+  rm -rf -- "$stage_dir"
+  return "$upload_status"
 }
 
 kaggle_upload_run_flow() {

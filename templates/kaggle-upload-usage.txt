@@ -1,7 +1,7 @@
 Upload artifact datasets to Kaggle with per-artifact change detection.
 
 Usage:
-  syk4y kaggle upload [--repo-root DIR] [options]
+  syk4y kaggle upload [--repo-root DIR] [options] [artifact...]
 
 Options:
   -u, --upload-dir DIR  Upload root (default: kaggle_upload under repo root)
@@ -11,3 +11,8 @@ Options:
   --build-wheel-only    Build/update wheelhouse.zip only, skip Kaggle upload
   --repo-root DIR       Target repository root (default: current directory)
   -h, --help            Show this help
+
+Artifacts:
+  Optional artifact names/paths (same input style as syk4y init).
+  Examples: syk4y kaggle upload datasets, syk4y kaggle upload wheelhouse.
+  If omitted, upload checks all initialized artifacts under upload root.

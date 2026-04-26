@@ -45,10 +45,13 @@ artifact_source_path() {
 
 resolve_initialized_artifacts() {
   local artifact_id metadata_file dataset_dir dataset_slug prefix source_spec item_name
-  local -a artifact_settings
+  local -a artifact_settings selected_artifact_ids missing_artifacts
   declare -A seen_artifact_ids=()
+  selected_artifact_ids=()
+  missing_artifacts=()
 
   ARTIFACT_IDS=()
+  ALL_ARTIFACT_IDS=()
   ARTIFACT_SOURCE_SPEC=()
   ARTIFACT_ITEM_NAMES=()
   prefix="${BASE_DATASET_SLUG}-"
@@ -102,6 +105,30 @@ resolve_initialized_artifacts() {
     echo "Error: no initialized artifacts found under '$UPLOAD_ROOT'." >&2
     echo "Run: syk4y init <artifact...> first." >&2
     exit 1
+  fi
+
+  ALL_ARTIFACT_IDS=("${ARTIFACT_IDS[@]}")
+
+  if [[ "${#ARTIFACT_FILTER_IDS[@]}" -gt 0 ]]; then
+    for artifact_id in "${ARTIFACT_FILTER_IDS[@]}"; do
+      if [[ -z "${seen_artifact_ids[$artifact_id]+x}" ]]; then
+        missing_artifacts+=("$artifact_id")
+      else
+        selected_artifact_ids+=("$artifact_id")
+      fi
+    done
+
+    if [[ "${#missing_artifacts[@]}" -gt 0 ]]; then
+      echo "Error: requested artifact(s) were not initialized under '$UPLOAD_ROOT': ${missing_artifacts[*]}" >&2
+      echo "Initialized artifacts: ${ALL_ARTIFACT_IDS[*]}" >&2
+      echo "Run: syk4y init <artifact...> first." >&2
+      exit 1
+    fi
+
+    ARTIFACT_IDS=("${selected_artifact_ids[@]}")
+    echo "Detected initialized artifacts: ${ALL_ARTIFACT_IDS[*]}"
+    echo "Selected artifacts for upload: ${ARTIFACT_IDS[*]}"
+    return
   fi
 
   echo "Detected initialized artifacts: ${ARTIFACT_IDS[*]}"

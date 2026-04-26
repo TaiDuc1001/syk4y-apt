@@ -11,6 +11,8 @@ kaggle_upload_parse_args() {
   DIR_MODE_OVERRIDE=""
   FORCE_UPLOAD_OVERRIDE=0
   BUILD_WHEEL_ONLY=0
+  ARTIFACT_FILTERS=()
+  ARTIFACT_FILTER_IDS=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -58,13 +60,50 @@ kaggle_upload_parse_args() {
         kaggle_upload_usage
         exit 0
         ;;
-      *)
+      --)
+        shift
+        while [[ $# -gt 0 ]]; do
+          ARTIFACT_FILTERS+=("$1")
+          shift
+        done
+        ;;
+      -*)
         echo "Unknown option: $1" >&2
         kaggle_upload_usage >&2
         exit 2
         ;;
+      *)
+        ARTIFACT_FILTERS+=("$1")
+        shift
+        ;;
     esac
   done
+
+  if [[ "${#ARTIFACT_FILTERS[@]}" -gt 0 ]]; then
+    local artifact artifact_id
+    local -A seen_filter_ids=()
+    local -A filter_id_owner=()
+
+    for artifact in "${ARTIFACT_FILTERS[@]}"; do
+      if [[ -z "$artifact" ]]; then
+        echo "Error: artifact name cannot be empty." >&2
+        exit 2
+      fi
+
+      artifact_id="$(syk4y_slugify "$artifact")"
+      if [[ -n "${filter_id_owner[$artifact_id]+x}" ]] && [[ "${filter_id_owner[$artifact_id]}" != "$artifact" ]]; then
+        echo "Error: artifact slug collision between '${filter_id_owner[$artifact_id]}' and '$artifact' (slug: '$artifact_id')." >&2
+        echo "Use distinct artifact names that slugify uniquely." >&2
+        exit 2
+      fi
+
+      if [[ -z "${seen_filter_ids[$artifact_id]+x}" ]]; then
+        seen_filter_ids["$artifact_id"]=1
+        filter_id_owner["$artifact_id"]="$artifact"
+        ARTIFACT_FILTER_IDS+=("$artifact_id")
+      fi
+    done
+  fi
 }
 
 kaggle_upload_prepare_context() {
@@ -90,6 +129,7 @@ kaggle_upload_prepare_context() {
   STATE_FILE="$UPLOAD_ROOT/.upload-state.json"
 
   ARTIFACT_IDS=()
+  ALL_ARTIFACT_IDS=()
 
   DIR_MODE="${KAGGLE_DIR_MODE:-zip}"
   VERSION_MESSAGE="${KAGGLE_VERSION_MESSAGE:-Artifacts update $(date '+%Y-%m-%d %H:%M:%S')}"

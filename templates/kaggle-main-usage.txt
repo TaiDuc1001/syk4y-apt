@@ -10,5 +10,6 @@ Subcommands:
 Examples:
   syk4y kaggle login
   syk4y kaggle upload --force
+  syk4y kaggle upload datasets wheelhouse
   syk4y kaggle account add --id main --username user1 --key xxxxx
   syk4y kaggle run start --notebook experiment.ipynb

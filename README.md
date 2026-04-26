@@ -113,6 +113,13 @@ If `wheelhouse` is included, `wheelhouse.zip` is built/updated.
 syk4y kaggle upload
 ```
 
+Upload selected artifacts only:
+
+```bash
+syk4y kaggle upload datasets
+syk4y kaggle upload wheelhouse
+```
+
 Useful options:
 
 ```bash
