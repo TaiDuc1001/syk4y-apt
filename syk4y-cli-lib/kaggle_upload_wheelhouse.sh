@@ -55,6 +55,8 @@ build_wheelhouse_if_needed() {
 
   if [[ -f "$WHEELHOUSE_PATH" ]] && [[ -n "$prev_input_hash" ]] && [[ "$prev_input_hash" == "$WHEELHOUSE_INPUT_HASH" ]]; then
     echo "wheelhouse.zip is up-to-date (dependency snapshot unchanged)."
+    trap - RETURN
+    cleanup_wheel_tmp
     return
   fi
 
@@ -126,9 +128,13 @@ build_wheelhouse_if_needed() {
   mkdir -p "$WHEELHOUSE_DATASET_DIR"
   if [[ -f "$WHEELHOUSE_PATH" ]] && cmp -s "$wheelhouse_tmp_zip" "$WHEELHOUSE_PATH"; then
     echo "wheelhouse.zip unchanged."
+    trap - RETURN
+    cleanup_wheel_tmp
     return
   fi
 
   mv -f "$wheelhouse_tmp_zip" "$WHEELHOUSE_PATH"
   echo "Updated wheelhouse archive: $WHEELHOUSE_PATH"
+  trap - RETURN
+  cleanup_wheel_tmp
 }
