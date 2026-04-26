@@ -8,6 +8,8 @@ source "$SCRIPT_DIR/syk4y-cli-lib/python_env.sh"
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_env.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/string_utils.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/gitignore_utils.sh"
 TEMPLATE_DIR="$SCRIPT_DIR/templates"
 
 OUT_FILE=""
@@ -176,6 +178,7 @@ if [[ "$SKIP_GEN" -eq 1 ]] && [[ "${#SELECTED_ARTIFACTS[@]}" -eq 0 ]]; then
 fi
 
 cd "$REPO_ROOT"
+syk4y_ensure_kaggle_upload_gitignore "$REPO_ROOT"
 
 REPO_NAME="$(basename "$REPO_ROOT")"
 REPO_SLUG="$(syk4y_slugify "$REPO_NAME")"
