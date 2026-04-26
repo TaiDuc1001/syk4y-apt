@@ -187,7 +187,7 @@ remote_missing_expected_artifacts() {
     return
   fi
 
-  if printf '%s\n' "$csv_output" | awk -F',' 'NR > 1 {print $1}' | grep -Fxq "$artifact_item_name"; then
+  if [[ "$(printf '%s\n' "$csv_output" | "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" csv-first-column-contains "$artifact_item_name")" == "1" ]]; then
     echo ""
   else
     echo "$artifact_item_name"

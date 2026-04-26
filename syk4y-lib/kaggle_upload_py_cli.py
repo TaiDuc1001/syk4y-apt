@@ -1,7 +1,10 @@
 import argparse
+import csv
+import io
 import json
 import os
 import re
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -179,6 +182,27 @@ def cmd_kaggle_resume_marker(path: str, resume_dir: str) -> int:
     return 0
 
 
+def cmd_csv_first_column_contains(needle: str) -> int:
+    data = sys.stdin.read()
+    if not data.strip():
+        print("0")
+        return 0
+
+    reader = csv.reader(io.StringIO(data))
+    for row in reader:
+        if not row:
+            continue
+        first_col = row[0].strip()
+        if first_col.lower() == "name":
+            continue
+        if first_col == needle:
+            print("1")
+            return 0
+
+    print("0")
+    return 0
+
+
 def _normalize_dist_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
@@ -283,6 +307,9 @@ def main() -> int:
     p_krm.add_argument("path")
     p_krm.add_argument("resume_dir")
 
+    p_cfc = sub.add_parser("csv-first-column-contains")
+    p_cfc.add_argument("needle")
+
     p_swr = sub.add_parser("sanitize-wheelhouse-requirements")
     p_swr.add_argument("input_path")
     p_swr.add_argument("output_path")
@@ -307,6 +334,8 @@ def main() -> int:
         return cmd_kaggle_resume_dir()
     if args.command == "kaggle-resume-marker":
         return cmd_kaggle_resume_marker(args.path, args.resume_dir)
+    if args.command == "csv-first-column-contains":
+        return cmd_csv_first_column_contains(args.needle)
     if args.command == "sanitize-wheelhouse-requirements":
         return cmd_sanitize_wheelhouse_requirements(args.input_path, args.output_path)
 

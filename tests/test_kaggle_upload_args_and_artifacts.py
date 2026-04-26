@@ -107,6 +107,55 @@ resolve_initialized_artifacts
             self.assertEqual(proc.returncode, 1, proc.stderr)
             self.assertIn("requested artifact(s) were not initialized", proc.stderr)
 
+    def test_remote_missing_expected_artifacts_handles_csv_quotes_and_crlf(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_kaggle = tmp_path / "fake-kaggle.sh"
+            fake_kaggle.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'name,size,creationDate\\r\\n\"wheelhouse.zip\",42,2026-01-01\\r\\n'\n",
+                encoding="utf-8",
+            )
+            fake_kaggle.chmod(0o755)
+
+            script = f"""
+set -euo pipefail
+SCRIPT_DIR="{REPO_ROOT}"
+PYTHON_BIN="python3"
+KAGGLE_CMD=("$FAKE_KAGGLE")
+source "{ARTIFACTS_SH}"
+missing="$(remote_missing_expected_artifacts "owner/repo-wheelhouse" "wheelhouse" "wheelhouse.zip")"
+echo "MISSING=$missing"
+"""
+            proc = run_bash(script, env={"FAKE_KAGGLE": str(fake_kaggle)})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("MISSING=", proc.stdout)
+            self.assertNotIn("MISSING=wheelhouse.zip", proc.stdout)
+
+    def test_remote_missing_expected_artifacts_returns_missing_when_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_kaggle = tmp_path / "fake-kaggle.sh"
+            fake_kaggle.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'name,size,creationDate\\nother.zip,42,2026-01-01\\n'\n",
+                encoding="utf-8",
+            )
+            fake_kaggle.chmod(0o755)
+
+            script = f"""
+set -euo pipefail
+SCRIPT_DIR="{REPO_ROOT}"
+PYTHON_BIN="python3"
+KAGGLE_CMD=("$FAKE_KAGGLE")
+source "{ARTIFACTS_SH}"
+missing="$(remote_missing_expected_artifacts "owner/repo-wheelhouse" "wheelhouse" "wheelhouse.zip")"
+echo "MISSING=$missing"
+"""
+            proc = run_bash(script, env={"FAKE_KAGGLE": str(fake_kaggle)})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("MISSING=wheelhouse.zip", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
