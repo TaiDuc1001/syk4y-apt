@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import zipfile
@@ -28,17 +29,8 @@ def cmd_fingerprint_path(target: str) -> int:
         h.update(b"\0")
     elif p.is_dir():
         h.update(b"D\0")
-        for q in sorted(p.rglob("*")):
-            rel = q.relative_to(p).as_posix()
-            st = q.lstat()
-            if q.is_symlink():
-                typ = "L"
-            elif q.is_dir():
-                typ = "D"
-            elif q.is_file():
-                typ = "F"
-            else:
-                typ = "O"
+        for q, rel, typ in _walk_path_following_symlink_dirs(p):
+            st = q.stat() if typ in {"D", "F"} else q.lstat()
             h.update(typ.encode())
             h.update(b"\0")
             h.update(rel.encode())
@@ -47,6 +39,9 @@ def cmd_fingerprint_path(target: str) -> int:
             h.update(b"\0")
             h.update(str(st.st_mtime_ns).encode())
             h.update(b"\0")
+            if q.is_symlink():
+                h.update(os.readlink(q).encode())
+                h.update(b"\0")
     else:
         st = p.stat()
         h.update(b"O\0")
@@ -57,6 +52,37 @@ def cmd_fingerprint_path(target: str) -> int:
 
     print(h.hexdigest())
     return 0
+
+
+def _walk_path_following_symlink_dirs(root: Path):
+    seen_dirs = set()
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        current = Path(dirpath)
+        try:
+            current_stat = current.stat()
+        except OSError:
+            dirnames[:] = []
+            continue
+
+        current_key = (current_stat.st_dev, current_stat.st_ino)
+        if current_key in seen_dirs:
+            dirnames[:] = []
+            continue
+        seen_dirs.add(current_key)
+
+        entries = []
+        for name in dirnames:
+            path = current / name
+            rel = path.relative_to(root).as_posix()
+            entries.append((path, rel, "D"))
+        for name in filenames:
+            path = current / name
+            rel = path.relative_to(root).as_posix()
+            entries.append((path, rel, "F" if path.is_file() else "O"))
+
+        for path, rel, typ in sorted(entries, key=lambda item: item[1]):
+            yield path, rel, typ
 
 
 def cmd_read_state_value(state_file: str, key: str) -> int:
@@ -154,7 +180,37 @@ def cmd_pack_wheelhouse_zip(source_dir: str, output_zip: str, zip_mode: str) -> 
             info.compress_type = compression
             info.create_system = 3
             info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
-            zf.writestr(info, path.read_bytes())
+            with path.open("rb") as src, zf.open(info, "w") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+    return 0
+
+
+def cmd_pack_artifact_dir_zip(source_dir: str, output_zip: str, zip_mode: str) -> int:
+    source = Path(source_dir)
+    output = Path(output_zip)
+
+    mode = (zip_mode or "store").strip().lower()
+    compression = zipfile.ZIP_STORED if mode == "store" else zipfile.ZIP_DEFLATED
+
+    with zipfile.ZipFile(output, mode="w", compression=compression) as zf:
+        for path, rel, typ in _walk_path_following_symlink_dirs(source):
+            if typ == "D":
+                info = zipfile.ZipInfo(rel.rstrip("/") + "/")
+                info.date_time = (1980, 1, 1, 0, 0, 0)
+                info.compress_type = compression
+                info.create_system = 3
+                info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
+                zf.writestr(info, b"")
+                continue
+            if typ != "F":
+                continue
+            info = zipfile.ZipInfo(rel)
+            info.date_time = (1980, 1, 1, 0, 0, 0)
+            info.compress_type = compression
+            info.create_system = 3
+            info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
+            with path.open("rb") as src, zf.open(info, "w") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
     return 0
 
 
@@ -298,6 +354,11 @@ def main() -> int:
     p_pwz.add_argument("output_zip")
     p_pwz.add_argument("zip_mode")
 
+    p_paz = sub.add_parser("pack-artifact-dir-zip")
+    p_paz.add_argument("source_dir")
+    p_paz.add_argument("output_zip")
+    p_paz.add_argument("zip_mode")
+
     p_edr = sub.add_parser("extract-dataset-ref")
     p_edr.add_argument("metadata_file")
 
@@ -328,6 +389,8 @@ def main() -> int:
         return cmd_pyproject_extra_indexes(args.pyproject_path)
     if args.command == "pack-wheelhouse-zip":
         return cmd_pack_wheelhouse_zip(args.source_dir, args.output_zip, args.zip_mode)
+    if args.command == "pack-artifact-dir-zip":
+        return cmd_pack_artifact_dir_zip(args.source_dir, args.output_zip, args.zip_mode)
     if args.command == "extract-dataset-ref":
         return cmd_extract_dataset_ref(args.metadata_file)
     if args.command == "kaggle-resume-dir":

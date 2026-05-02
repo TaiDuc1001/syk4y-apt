@@ -31,7 +31,15 @@ upload_single_artifact() {
 
   cp "$metadata_file" "$stage_dir/dataset-metadata.json" || upload_status=$?
   if [[ "$upload_status" -eq 0 ]]; then
-    ln -sfn "$source_path" "$stage_dir/$item_name" || upload_status=$?
+    if [[ -d "$source_path" && "$DIR_MODE" == "zip" ]]; then
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+        pack-artifact-dir-zip \
+        "$source_path" \
+        "$stage_dir/$item_name.zip" \
+        "$DIR_MODE" || upload_status=$?
+    else
+      ln -sfn "$source_path" "$stage_dir/$item_name" || upload_status=$?
+    fi
   fi
   if [[ "$upload_status" -eq 0 ]]; then
     clear_resume_markers "$stage_dir" || upload_status=$?
