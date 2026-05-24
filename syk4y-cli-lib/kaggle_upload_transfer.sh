@@ -36,7 +36,7 @@ upload_single_artifact() {
         pack-artifact-dir-zip \
         "$source_path" \
         "$stage_dir/$item_name.zip" \
-        "$DIR_MODE" || upload_status=$?
+        "$ARTIFACT_ZIP_MODE" || upload_status=$?
     else
       ln -sfn "$source_path" "$stage_dir/$item_name" || upload_status=$?
     fi

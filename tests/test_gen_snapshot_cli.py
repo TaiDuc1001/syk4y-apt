@@ -94,6 +94,56 @@ class GenSnapshotCliTests(unittest.TestCase):
             restored_mode = stat.S_IMODE((restore_dir / "run.sh").stat().st_mode)
             self.assertEqual(restored_mode, 0o755)
 
+    def test_snapshot_skips_files_larger_than_one_mib_with_yellow_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+
+            init = run_cmd(["git", "init", "-q"], cwd=repo)
+            self.assertEqual(init.returncode, 0, init.stderr)
+
+            (repo / "small.txt").write_text("keep me\n", encoding="utf-8")
+            (repo / "large.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+
+            out_abs = repo / "gen-full.py"
+            gen = run_cmd(
+                ["python3", str(GEN_SNAPSHOT_CLI), str(repo), str(out_abs), str(TEMPLATE_DIR)],
+                cwd=REPO_ROOT,
+            )
+            self.assertEqual(gen.returncode, 0, gen.stderr)
+            self.assertIn("\033[33mWarning: skipping large snapshot file", gen.stderr)
+            self.assertIn("large.bin", gen.stderr)
+            self.assertIn("Snapshot skipped large files: 1", gen.stdout)
+
+            restore_dir = Path(tmp) / "restored"
+            restored = run_cmd(
+                ["python3", str(out_abs), str(restore_dir)],
+                cwd=REPO_ROOT,
+            )
+            self.assertEqual(restored.returncode, 0, restored.stderr)
+            self.assertEqual((restore_dir / "small.txt").read_text(encoding="utf-8"), "keep me\n")
+            self.assertFalse((restore_dir / "large.bin").exists())
+
+    def test_snapshot_fails_when_generated_script_exceeds_one_mib_with_red_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+
+            init = run_cmd(["git", "init", "-q"], cwd=repo)
+            self.assertEqual(init.returncode, 0, init.stderr)
+
+            for idx in range(320):
+                (repo / f"blob-{idx:03d}.bin").write_bytes(os.urandom(4096))
+
+            out_abs = repo / "gen-full.py"
+            gen = run_cmd(
+                ["python3", str(GEN_SNAPSHOT_CLI), str(repo), str(out_abs), str(TEMPLATE_DIR)],
+                cwd=REPO_ROOT,
+            )
+            self.assertEqual(gen.returncode, 1, gen.stdout)
+            self.assertIn("\033[31mError: generated snapshot script is too large", gen.stderr)
+            self.assertFalse(out_abs.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

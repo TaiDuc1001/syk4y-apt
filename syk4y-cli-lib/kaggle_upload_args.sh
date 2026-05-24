@@ -132,6 +132,7 @@ kaggle_upload_prepare_context() {
   ALL_ARTIFACT_IDS=()
 
   DIR_MODE="${KAGGLE_DIR_MODE:-zip}"
+  ARTIFACT_ZIP_MODE="${KAGGLE_ARTIFACT_ZIP_MODE:-$DIR_MODE}"
   VERSION_MESSAGE="${KAGGLE_VERSION_MESSAGE:-Artifacts update $(date '+%Y-%m-%d %H:%M:%S')}"
   WHEELHOUSE_DATASET_DIR="$UPLOAD_ROOT/${BASE_DATASET_SLUG}-wheelhouse"
   WHEELHOUSE_PATH="$WHEELHOUSE_DATASET_DIR/wheelhouse.zip"
@@ -154,6 +155,14 @@ kaggle_upload_prepare_context() {
   fi
   if [[ -n "$DIR_MODE_OVERRIDE" ]]; then
     DIR_MODE="$DIR_MODE_OVERRIDE"
+    if [[ -z "${KAGGLE_ARTIFACT_ZIP_MODE:-}" ]]; then
+      ARTIFACT_ZIP_MODE="$DIR_MODE_OVERRIDE"
+    fi
+  fi
+
+  if [[ "$DIR_MODE" == "store" ]]; then
+    DIR_MODE="zip"
+    ARTIFACT_ZIP_MODE="store"
   fi
 
   # Recompute derived paths after applying CLI overrides.

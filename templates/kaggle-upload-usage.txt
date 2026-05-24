@@ -7,7 +7,7 @@ Options:
   -u, --upload-dir DIR  Upload root (default: kaggle_upload under repo root)
   --force               Force upload even if no changes detected
   -m, --message TEXT    Kaggle version message override
-  --dir-mode MODE       Kaggle dir mode: skip|zip|tar
+  --dir-mode MODE       Kaggle dir mode: skip|zip|tar|store (store = zip without compression)
   --build-wheel-only    Build/update wheelhouse.zip only, skip Kaggle upload
   --repo-root DIR       Target repository root (default: current directory)
   -h, --help            Show this help

@@ -22,6 +22,29 @@ CHUNK_TARGET_BITS = 13  # ~8KiB average
 CHUNK_MAX_BYTES = 16384
 CHUNK_BOUNDARY_MASK = (1 << CHUNK_TARGET_BITS) - 1
 
+MAX_EMBED_FILE_BYTES = 1024 * 1024
+MAX_SNAPSHOT_SCRIPT_BYTES = 1024 * 1024
+
+ANSI_YELLOW = "\033[33m"
+ANSI_RED = "\033[31m"
+ANSI_RESET = "\033[0m"
+
+
+def _color(text: str, ansi_color: str) -> str:
+    return f"{ansi_color}{text}{ANSI_RESET}"
+
+
+def _format_bytes(size: int) -> str:
+    return f"{size} bytes"
+
+
+def _warn(message: str) -> None:
+    print(_color(f"Warning: {message}", ANSI_YELLOW), file=sys.stderr)
+
+
+def _error(message: str) -> None:
+    print(_color(f"Error: {message}", ANSI_RED), file=sys.stderr)
+
 
 def _encode_text_b64(value: str) -> str:
     return base64.b64encode(value.encode("utf-8", "surrogateescape")).decode("ascii")
@@ -220,6 +243,7 @@ def main() -> int:
     entries = []
     file_count = 0
     link_count = 0
+    skipped_large_files = []
 
     for rel_path in paths:
         if out_skip and rel_path == out_skip:
@@ -237,7 +261,17 @@ def main() -> int:
         if not full_path.is_file():
             continue
 
-        mode = stat.S_IMODE(full_path.stat().st_mode)
+        st = full_path.stat()
+        if st.st_size > MAX_EMBED_FILE_BYTES:
+            skipped_large_files.append((rel_path, st.st_size))
+            _warn(
+                "skipping large snapshot file "
+                f"{rel_path!r} ({_format_bytes(st.st_size)} > "
+                f"{_format_bytes(MAX_EMBED_FILE_BYTES)})"
+            )
+            continue
+
+        mode = stat.S_IMODE(st.st_mode)
         entries.append(
             {
                 "kind": "file",
@@ -284,6 +318,17 @@ def main() -> int:
 
     os.chmod(tmp_name, 0o755)
     tmp_path = Path(tmp_name)
+    snapshot_script_size = tmp_path.stat().st_size
+    if snapshot_script_size > MAX_SNAPSHOT_SCRIPT_BYTES:
+        tmp_path.unlink()
+        _error(
+            "generated snapshot script is too large: "
+            f"{out_abs} is {_format_bytes(snapshot_script_size)} "
+            f"> {_format_bytes(MAX_SNAPSHOT_SCRIPT_BYTES)}. "
+            "Move large assets to Kaggle artifacts instead of gen-full.py."
+        )
+        return 1
+
     should_overwrite = True
 
     if out_abs.exists() and out_abs.is_file():
@@ -297,6 +342,8 @@ def main() -> int:
         print(f"Snapshot script unchanged: {out_abs}")
 
     print(f"Snapshot entries: files={file_count}, symlinks={link_count}")
+    if skipped_large_files:
+        print(f"Snapshot skipped large files: {len(skipped_large_files)}")
     print(
         "Snapshot payload: "
         f"kind={payload_kind}, "
