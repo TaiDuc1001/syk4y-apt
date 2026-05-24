@@ -180,7 +180,7 @@ def cmd_pack_wheelhouse_zip(source_dir: str, output_zip: str, zip_mode: str) -> 
             info.compress_type = compression
             info.create_system = 3
             info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
-            with path.open("rb") as src, zf.open(info, "w") as dst:
+            with path.open("rb") as src, zf.open(info, "w", force_zip64=True) as dst:
                 shutil.copyfileobj(src, dst, length=1024 * 1024)
     return 0
 
@@ -209,7 +209,7 @@ def cmd_pack_artifact_dir_zip(source_dir: str, output_zip: str, zip_mode: str) -
             info.compress_type = compression
             info.create_system = 3
             info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
-            with path.open("rb") as src, zf.open(info, "w") as dst:
+            with path.open("rb") as src, zf.open(info, "w", force_zip64=True) as dst:
                 shutil.copyfileobj(src, dst, length=1024 * 1024)
     return 0
 

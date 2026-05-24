@@ -1,3 +1,5 @@
+import importlib.util
+import io
 import subprocess
 import tempfile
 import unittest
@@ -7,6 +9,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PY_CLI = REPO_ROOT / "syk4y-lib" / "kaggle_upload_py_cli.py"
+
+
+def load_py_cli_module():
+    spec = importlib.util.spec_from_file_location("kaggle_upload_py_cli", PY_CLI)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_py_cli(*args: str):
@@ -20,6 +29,50 @@ def run_py_cli(*args: str):
 
 
 class KaggleUploadPyCliTests(unittest.TestCase):
+    def test_zip_packers_force_zip64_for_streamed_files(self):
+        module = load_py_cli_module()
+        open_calls = []
+
+        class RecordingZipFile:
+            def __init__(self, output, mode, compression):
+                self.output = output
+                self.mode = mode
+                self.compression = compression
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def open(self, info, mode, force_zip64=False):
+                open_calls.append((info.filename, mode, force_zip64))
+                return io.BytesIO()
+
+            def writestr(self, info, data):
+                pass
+
+        original_zip_file = module.zipfile.ZipFile
+        module.zipfile.ZipFile = RecordingZipFile
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+
+                wheelhouse = tmp_path / "wheelhouse"
+                wheelhouse.mkdir()
+                (wheelhouse / "pkg.whl").write_bytes(b"wheel")
+                module.cmd_pack_wheelhouse_zip(str(wheelhouse), str(tmp_path / "wheelhouse.zip"), "store")
+
+                artifacts = tmp_path / "artifacts"
+                artifacts.mkdir()
+                (artifacts / "model.bin").write_bytes(b"model")
+                module.cmd_pack_artifact_dir_zip(str(artifacts), str(tmp_path / "artifacts.zip"), "store")
+        finally:
+            module.zipfile.ZipFile = original_zip_file
+
+        self.assertIn(("pkg.whl", "w", True), open_calls)
+        self.assertIn(("model.bin", "w", True), open_calls)
+
     def test_pack_artifact_dir_zip_follows_nested_directory_symlinks(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
