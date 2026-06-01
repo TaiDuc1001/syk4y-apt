@@ -226,6 +226,40 @@ def cmd_extract_dataset_ref(metadata_file: str) -> int:
     return 0
 
 
+def cmd_rewrite_dataset_owner(metadata_file: str, kaggle_username: str) -> int:
+    username = (kaggle_username or "").strip()
+    if not username:
+        print("Error: Kaggle username is empty.", file=sys.stderr)
+        return 2
+
+    meta = Path(metadata_file)
+    try:
+        data = json.loads(meta.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Error: could not read dataset metadata '{metadata_file}': {exc}", file=sys.stderr)
+        return 1
+
+    ref = data.get("id", "")
+    if not isinstance(ref, str) or "/" not in ref:
+        print(f"Error: '{metadata_file}' has invalid dataset id: {ref!r}", file=sys.stderr)
+        return 1
+
+    owner, slug = ref.split("/", 1)
+    owner = owner.strip()
+    slug = slug.strip()
+    if not owner or not slug:
+        print(f"Error: '{metadata_file}' has invalid dataset id: {ref!r}", file=sys.stderr)
+        return 1
+
+    new_ref = f"{username}/{slug}"
+    if ref != new_ref:
+        data["id"] = new_ref
+        meta.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    print(new_ref)
+    return 0
+
+
 def cmd_kaggle_resume_dir() -> int:
     print(os.path.join(tempfile.gettempdir(), ".kaggle", "uploads"))
     return 0
@@ -362,6 +396,10 @@ def main() -> int:
     p_edr = sub.add_parser("extract-dataset-ref")
     p_edr.add_argument("metadata_file")
 
+    p_rdo = sub.add_parser("rewrite-dataset-owner")
+    p_rdo.add_argument("metadata_file")
+    p_rdo.add_argument("kaggle_username")
+
     sub.add_parser("kaggle-resume-dir")
 
     p_krm = sub.add_parser("kaggle-resume-marker")
@@ -393,6 +431,8 @@ def main() -> int:
         return cmd_pack_artifact_dir_zip(args.source_dir, args.output_zip, args.zip_mode)
     if args.command == "extract-dataset-ref":
         return cmd_extract_dataset_ref(args.metadata_file)
+    if args.command == "rewrite-dataset-owner":
+        return cmd_rewrite_dataset_owner(args.metadata_file, args.kaggle_username)
     if args.command == "kaggle-resume-dir":
         return cmd_kaggle_resume_dir()
     if args.command == "kaggle-resume-marker":

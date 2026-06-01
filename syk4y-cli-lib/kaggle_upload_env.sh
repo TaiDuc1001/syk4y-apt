@@ -112,6 +112,7 @@ has_kaggle_credentials() {
 }
 
 ensure_kaggle_upload_prereqs() {
+  syk4y_export_kaggle_credentials "$PYTHON_BIN"
   ensure_kaggle_cli
   if has_kaggle_credentials; then
     return

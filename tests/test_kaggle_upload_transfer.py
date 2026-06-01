@@ -89,6 +89,83 @@ echo "TRAP=$trap_output"
         self.assertIn("datasets version -p", cmd_text)
         self.assertNotIn("Uploaded artifact source path:", proc.stdout)
 
+    def test_run_flow_returns_upload_failure_and_skips_state_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            source_file = repo / "artifact.bin"
+            metadata_file = repo / "dataset-metadata.json"
+            state_log = tmp_path / "state.log"
+            source_file.write_text("payload\n", encoding="utf-8")
+            metadata_file.write_text(
+                '{"id":"your-kaggle-username/repo-datasets"}\n',
+                encoding="utf-8",
+            )
+
+            script = f"""
+set -euo pipefail
+source "{TRANSFER_SH}"
+SCRIPT_DIR="{REPO_ROOT}"
+REPO_ROOT="$REPO_DIR"
+UPLOAD_ROOT="$UPLOAD_ROOT_ENV"
+PYTHON_BIN="python3"
+BUILD_WHEEL_ONLY=0
+STATE_FILE="$STATE_FILE_ENV"
+FORCE_UPLOAD=0
+VERSION_MESSAGE="test upload"
+DIR_MODE="zip"
+KAGGLE_CMD=("false")
+declare -A CURRENT_FP
+declare -A CURRENT_META_FP
+syk4y_resolve_python_bin_or_die() {{ printf '%s\\n' "python3"; }}
+resolve_wheelhouse_python() {{ printf '%s\\n' "python3"; }}
+ensure_pip() {{ :; }}
+ensure_kaggle_upload_prereqs() {{ :; }}
+syk4y_resolve_kaggle_username() {{ printf '%s\\n' "ducphan1001"; }}
+resolve_initialized_artifacts() {{ ARTIFACT_IDS=("datasets"); ALL_ARTIFACT_IDS=("datasets"); }}
+verify_dataset_structure() {{ :; }}
+artifact_source_path() {{ printf '%s\\n' "$SOURCE_FILE"; }}
+artifact_metadata_file() {{ printf '%s\\n' "$METADATA_FILE"; }}
+artifact_item_name() {{ printf '%s\\n' "artifact.bin"; }}
+fingerprint_path() {{ printf '%s\\n' "fp"; }}
+read_state_value() {{ printf '\\n'; }}
+extract_dataset_ref() {{
+  "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" extract-dataset-ref "$1"
+}}
+remote_missing_expected_artifacts() {{ printf '\\n'; }}
+write_state_file() {{ printf 'write-state\\n' >> "$STATE_LOG"; }}
+upload_single_artifact() {{ return 7; }}
+set +e
+kaggle_upload_run_flow
+status="$?"
+set -e
+echo "STATUS=$status"
+cat "$METADATA_FILE"
+if [[ -f "$STATE_LOG" ]]; then cat "$STATE_LOG"; fi
+"""
+            proc = subprocess.run(
+                ["bash", "-lc", script],
+                cwd=REPO_ROOT,
+                env={
+                    **os.environ,
+                    "REPO_DIR": str(repo),
+                    "UPLOAD_ROOT_ENV": str(repo / "kaggle_upload"),
+                    "SOURCE_FILE": str(source_file),
+                    "METADATA_FILE": str(metadata_file),
+                    "STATE_FILE_ENV": str(tmp_path / ".upload-state.json"),
+                    "STATE_LOG": str(state_log),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("STATUS=7", proc.stdout)
+            self.assertIn('"id": "ducphan1001/repo-datasets"', proc.stdout)
+            self.assertNotIn("write-state", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -71,11 +71,32 @@ upload_single_artifact() {
   return "$upload_status"
 }
 
+sync_dataset_metadata_owner() {
+  local metadata_file="$1"
+  local old_ref new_ref
+
+  old_ref="$(extract_dataset_ref "$metadata_file")"
+  new_ref="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+    rewrite-dataset-owner \
+    "$metadata_file" \
+    "$KAGGLE_UPLOAD_USERNAME")"
+
+  if [[ -z "$new_ref" ]]; then
+    echo "Error: '$metadata_file' missing valid dataset id." >&2
+    exit 1
+  fi
+
+  if [[ -n "$old_ref" && "$old_ref" != "$new_ref" ]]; then
+    echo "Updated dataset metadata owner: $old_ref -> $new_ref"
+  fi
+}
+
 kaggle_upload_run_flow() {
   local artifact_id source_path metadata_file item_name
   local current_fp previous_fp current_meta_fp previous_meta_fp
   local local_changed meta_changed dataset_ref dataset_exists
   local force_reason remote_missing should_upload
+  local failed_upload_status
 
   cd "$REPO_ROOT"
 
@@ -99,6 +120,7 @@ kaggle_upload_run_flow() {
   fi
 
   ensure_kaggle_upload_prereqs
+  KAGGLE_UPLOAD_USERNAME="$(syk4y_resolve_kaggle_username "$PYTHON_BIN" 1)"
   resolve_initialized_artifacts
   verify_dataset_structure
 
@@ -123,6 +145,8 @@ kaggle_upload_run_flow() {
       echo "Error: missing artifact path '$source_path'" >&2
       exit 1
     fi
+
+    sync_dataset_metadata_owner "$metadata_file"
 
     current_fp="$(fingerprint_path "$source_path")"
     CURRENT_FP["$artifact_id"]="$current_fp"
@@ -184,18 +208,29 @@ kaggle_upload_run_flow() {
   done
 
   local any_upload=0
+  failed_upload_status=0
   for artifact_id in "${ARTIFACT_IDS[@]}"; do
     if [[ "${SHOULD_UPLOAD[$artifact_id]}" -eq 1 ]]; then
       any_upload=1
-      upload_single_artifact \
+      if upload_single_artifact \
         "$artifact_id" \
         "${DATASET_REF[$artifact_id]}" \
         "${DATASET_EXISTS[$artifact_id]}" \
         "${LOCAL_CHANGED[$artifact_id]}" \
         "${META_CHANGED[$artifact_id]}" \
-        "${FORCE_REASON[$artifact_id]}"
+        "${FORCE_REASON[$artifact_id]}"; then
+        :
+      else
+        failed_upload_status=$?
+        break
+      fi
     fi
   done
+
+  if [[ "$failed_upload_status" -ne 0 ]]; then
+    echo "Error: artifact dataset upload failed." >&2
+    return "$failed_upload_status"
+  fi
 
   write_state_file
 

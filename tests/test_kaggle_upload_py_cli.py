@@ -113,6 +113,23 @@ class KaggleUploadPyCliTests(unittest.TestCase):
 
             self.assertNotEqual(before.stdout.strip(), after.stdout.strip())
 
+    def test_rewrite_dataset_owner_repairs_stale_metadata_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata = Path(tmp) / "dataset-metadata.json"
+            metadata.write_text(
+                '{"id":"your-kaggle-username/repo-wheelhouse","title":"repo wheelhouse"}\n',
+                encoding="utf-8",
+            )
+
+            proc = run_py_cli("rewrite-dataset-owner", str(metadata), "ducphan1001")
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), "ducphan1001/repo-wheelhouse")
+            self.assertIn(
+                '"id": "ducphan1001/repo-wheelhouse"',
+                metadata.read_text(encoding="utf-8"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
