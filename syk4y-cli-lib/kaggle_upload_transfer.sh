@@ -38,7 +38,8 @@ run_kaggle_upload_checked() {
 
 probe_kaggle_dataset() {
   local dataset_ref="$1"
-  local output_file
+  local dataset_owner output_file
+  dataset_owner="${dataset_ref%%/*}"
   output_file="$(mktemp "/tmp/kaggle-dataset-probe.XXXXXX.log")"
 
   if "${KAGGLE_CMD[@]}" datasets files -d "$dataset_ref" >"$output_file" 2>&1; then
@@ -49,6 +50,16 @@ probe_kaggle_dataset() {
   if grep -Eqi \
     '(^|[^0-9])404([^0-9]|$)|not found|does not exist|could not find (the )?dataset|dataset .* unavailable' \
     "$output_file"; then
+    rm -f "$output_file"
+    return 1
+  fi
+
+  # Kaggle's ListDatasetFiles endpoint also returns 403 for a dataset slug
+  # that does not exist. Treat that response as "missing" only for the
+  # authenticated user's own namespace; a 403 for another owner remains an
+  # authorization error.
+  if [[ "$dataset_owner" == "$KAGGLE_UPLOAD_USERNAME" ]] && \
+     grep -Eqi '(^|[^0-9])403([^0-9]|$)|forbidden' "$output_file"; then
     rm -f "$output_file"
     return 1
   fi

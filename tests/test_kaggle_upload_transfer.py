@@ -125,6 +125,7 @@ echo "TRAP=$trap_output"
 set -u -o pipefail
 source "{TRANSFER_SH}"
 KAGGLE_CMD=("$FAKE_KAGGLE")
+KAGGLE_UPLOAD_USERNAME="owner"
 set +e
 probe_kaggle_dataset "owner/dataset"
 status="$?"
@@ -164,6 +165,48 @@ echo "STATUS=$status"
             self.assertEqual(auth_error.returncode, 0, auth_error.stderr)
             self.assertIn("STATUS=2", auth_error.stdout)
             self.assertIn("could not determine", auth_error.stderr)
+
+            own_missing_403 = subprocess.run(
+                ["bash", "-lc", script],
+                cwd=REPO_ROOT,
+                env={
+                    **os.environ,
+                    "FAKE_KAGGLE": str(fake_kaggle),
+                    "PROBE_OUTPUT": (
+                        "403 Client Error: Forbidden for url: "
+                        "https://api.kaggle.com/v1/datasets.DatasetApiService/"
+                        "ListDatasetFiles"
+                    ),
+                    "PROBE_EXIT": "1",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(own_missing_403.returncode, 0, own_missing_403.stderr)
+            self.assertIn("STATUS=1", own_missing_403.stdout)
+            self.assertNotIn("could not determine", own_missing_403.stderr)
+
+            other_owner_script = script.replace(
+                'probe_kaggle_dataset "owner/dataset"',
+                'probe_kaggle_dataset "someone-else/dataset"',
+            )
+            other_owner_403 = subprocess.run(
+                ["bash", "-lc", other_owner_script],
+                cwd=REPO_ROOT,
+                env={
+                    **os.environ,
+                    "FAKE_KAGGLE": str(fake_kaggle),
+                    "PROBE_OUTPUT": "403 Client Error: Forbidden",
+                    "PROBE_EXIT": "1",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(other_owner_403.returncode, 0, other_owner_403.stderr)
+            self.assertIn("STATUS=2", other_owner_403.stdout)
+            self.assertIn("could not determine", other_owner_403.stderr)
 
     def test_run_flow_returns_upload_failure_and_skips_state_write(self):
         with tempfile.TemporaryDirectory() as tmp:
