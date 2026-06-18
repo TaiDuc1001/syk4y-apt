@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -162,7 +163,7 @@ if [[ "${1:-}" == "export" ]]; then
     prev="$arg"
   done
   printf 'uv-export\\n' >> "$COMMAND_LOG"
-  printf 'wheels/localpkg-0.1.0-py3-none-any.whl\\n' > "$output_file"
+  printf 'localpkg @ file:///kaggle/working/wheels/localpkg-0.1.0-py3-none-any.whl\\n' > "$output_file"
   exit 0
 fi
 echo "unexpected uv invocation: $*" >&2
@@ -200,6 +201,9 @@ if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "wheel" ]]; then
 fi
 if [[ "${1:-}" == *"/kaggle_upload_py_cli.py" ]]; then
   case "${2:-}" in
+    sanitize-wheelhouse-requirements)
+      cp "$3" "$4"
+      ;;
     pyproject-extra-indexes)
       ;;
     pack-wheelhouse-zip)
@@ -226,7 +230,7 @@ SCRIPT_DIR="{REPO_ROOT}"
 source "{WHEELHOUSE_SH}"
 
 REPO_ROOT="$REPO_DIR"
-PYTHON_BIN="$FAKE_PY"
+PYTHON_BIN="python3"
 WHEELHOUSE_PYTHON="$FAKE_PY"
 WHEEL_JOBS=1
 WHEEL_FAIL_ON_MISSING=0
@@ -257,6 +261,12 @@ build_wheelhouse_if_needed ""
                 f"pip-wheel|{repo_dir}|wheels/localpkg-0.1.0-py3-none-any.whl",
                 commands,
             )
+            wheelhouse_path = upload_root / "repo-wheelhouse" / "wheelhouse.zip"
+            with zipfile.ZipFile(wheelhouse_path) as archive:
+                self.assertIn(
+                    "localpkg-0.1.0-py3-none-any.whl",
+                    archive.namelist(),
+                )
 
     def test_build_wheelhouse_does_not_fallback_when_uv_lock_is_stale(self):
         with tempfile.TemporaryDirectory() as tmp:

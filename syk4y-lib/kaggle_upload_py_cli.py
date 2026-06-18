@@ -9,6 +9,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 
 def cmd_fingerprint_path(target: str) -> int:
@@ -304,9 +305,51 @@ def _strip_inline_comment(line: str) -> str:
     return line
 
 
-def cmd_sanitize_wheelhouse_requirements(input_path: str, output_path: str) -> int:
+def _repo_local_wheel_requirement(line: str, repo_root: Path | None) -> str:
+    if repo_root is None:
+        return ""
+
+    match = re.match(
+        r"^(?:[A-Za-z0-9][A-Za-z0-9._-]*\s*@\s*)?(file://\S+)$",
+        line,
+    )
+    if match is None:
+        return ""
+
+    parsed = urlparse(match.group(1))
+    source_path = Path(unquote(parsed.path))
+    filename = source_path.name
+    if not filename.lower().endswith(".whl"):
+        return ""
+
+    candidates = []
+    if source_path.is_file():
+        candidates.append(source_path)
+    candidates.extend(
+        [
+            repo_root / "wheels" / filename,
+            repo_root / filename,
+        ]
+    )
+
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            return candidate.resolve().relative_to(repo_root.resolve()).as_posix()
+        except ValueError:
+            return str(candidate.resolve())
+    return ""
+
+
+def cmd_sanitize_wheelhouse_requirements(
+    input_path: str,
+    output_path: str,
+    repo_root: str = "",
+) -> int:
     src = Path(input_path)
     dst = Path(output_path)
+    repo = Path(repo_root) if repo_root else None
 
     try:
         from importlib import metadata as importlib_metadata
@@ -332,6 +375,14 @@ def cmd_sanitize_wheelhouse_requirements(input_path: str, output_path: str) -> i
             continue
         if line.startswith("#") or line.startswith("-"):
             continue
+
+        local_wheel = _repo_local_wheel_requirement(line, repo)
+        if local_wheel:
+            print(
+                f"Mapped local wheel requirement: {raw_line} -> {local_wheel}",
+                file=os.sys.stderr,
+            )
+            line = local_wheel
 
         # Convert direct local file references (common with uv-managed pip/setuptools)
         # to portable name==version pins when the package is installed.
@@ -412,6 +463,7 @@ def main() -> int:
     p_swr = sub.add_parser("sanitize-wheelhouse-requirements")
     p_swr.add_argument("input_path")
     p_swr.add_argument("output_path")
+    p_swr.add_argument("repo_root", nargs="?", default="")
 
     args = parser.parse_args()
 
@@ -440,7 +492,11 @@ def main() -> int:
     if args.command == "csv-first-column-contains":
         return cmd_csv_first_column_contains(args.needle)
     if args.command == "sanitize-wheelhouse-requirements":
-        return cmd_sanitize_wheelhouse_requirements(args.input_path, args.output_path)
+        return cmd_sanitize_wheelhouse_requirements(
+            args.input_path,
+            args.output_path,
+            args.repo_root,
+        )
 
     return 2
 

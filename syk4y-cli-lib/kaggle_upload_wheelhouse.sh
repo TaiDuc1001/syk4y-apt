@@ -58,18 +58,19 @@ build_wheelhouse_if_needed() {
       echo "Error: failed to freeze installed packages from $WHEELHOUSE_PYTHON" >&2
       exit 1
     fi
-
-    "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-      sanitize-wheelhouse-requirements \
-      "$req_out" \
-      "$req_sanitized_out"
-    if [[ ! -s "$req_sanitized_out" ]]; then
-      echo "Error: no valid portable requirements found after sanitization." >&2
-      echo "Hint: install required packages into '$WHEELHOUSE_PYTHON' first, then retry." >&2
-      exit 1
-    fi
-    req_out="$req_sanitized_out"
   fi
+
+  "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+    sanitize-wheelhouse-requirements \
+    "$req_out" \
+    "$req_sanitized_out" \
+    "$REPO_ROOT"
+  if [[ ! -s "$req_sanitized_out" ]]; then
+    echo "Error: no valid portable requirements found after sanitization." >&2
+    echo "Hint: install required packages into '$WHEELHOUSE_PYTHON' first, then retry." >&2
+    exit 1
+  fi
+  req_out="$req_sanitized_out"
 
   if [[ ! -s "$req_out" ]]; then
     echo "Error: no dependencies found from $requirements_source." >&2

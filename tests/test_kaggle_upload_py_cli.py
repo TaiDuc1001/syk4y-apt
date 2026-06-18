@@ -29,6 +29,35 @@ def run_py_cli(*args: str):
 
 
 class KaggleUploadPyCliTests(unittest.TestCase):
+    def test_sanitize_maps_kaggle_working_wheel_to_repo_wheels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            wheels = repo / "wheels"
+            wheels.mkdir(parents=True)
+            wheel_name = "learn2learn-0.2.1-cp312-cp312-linux_x86_64.whl"
+            (wheels / wheel_name).write_bytes(b"wheel")
+            requirements = Path(tmp) / "requirements.txt"
+            sanitized = Path(tmp) / "sanitized.txt"
+            requirements.write_text(
+                "learn2learn @ "
+                f"file:///kaggle/working/wheels/{wheel_name}\n",
+                encoding="utf-8",
+            )
+
+            proc = run_py_cli(
+                "sanitize-wheelhouse-requirements",
+                str(requirements),
+                str(sanitized),
+                str(repo),
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(
+                sanitized.read_text(encoding="utf-8"),
+                f"wheels/{wheel_name}\n",
+            )
+            self.assertIn("Mapped local wheel requirement", proc.stderr)
+
     def test_zip_packers_force_zip64_for_streamed_files(self):
         module = load_py_cli_module()
         open_calls = []
