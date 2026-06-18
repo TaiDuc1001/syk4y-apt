@@ -60,12 +60,24 @@ ensure_pip() {
 }
 
 resolve_kaggle_cmd() {
-  if command -v kaggle >/dev/null 2>&1; then
-    KAGGLE_CMD=(kaggle)
+  local python_path="$PYTHON_BIN"
+  local python_kaggle=""
+
+  if [[ "$python_path" != */* ]]; then
+    python_path="$(command -v "$python_path" 2>/dev/null || true)"
+  fi
+  if [[ -n "$python_path" ]]; then
+    python_kaggle="$(dirname "$python_path")/kaggle"
+  fi
+
+  # The Kaggle package installs a console-script entry point but does not
+  # provide kaggle.__main__, so `python -m kaggle` is not a valid probe.
+  if [[ -n "$python_kaggle" && -x "$python_kaggle" ]]; then
+    KAGGLE_CMD=("$python_kaggle")
     return 0
   fi
-  if "$PYTHON_BIN" -m kaggle --help >/dev/null 2>&1; then
-    KAGGLE_CMD=("$PYTHON_BIN" -m kaggle)
+  if command -v kaggle >/dev/null 2>&1; then
+    KAGGLE_CMD=(kaggle)
     return 0
   fi
   return 1
@@ -98,7 +110,7 @@ ensure_kaggle_cli() {
     fi
   fi
 
-  echo "Error: Kaggle CLI is required for upload (either 'kaggle' or '$PYTHON_BIN -m kaggle')." >&2
+  echo "Error: Kaggle CLI is required for upload (either 'kaggle' on PATH or next to '$PYTHON_BIN')." >&2
   echo "Auto-install attempt failed." >&2
   if command -v uv >/dev/null 2>&1; then
     echo "Try manually: uv pip install --python \"$PYTHON_BIN\" kaggle" >&2

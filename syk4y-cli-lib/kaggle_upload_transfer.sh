@@ -14,6 +14,51 @@ clear_resume_markers() {
   done
 }
 
+run_kaggle_upload_checked() {
+  local output_file command_status
+  local -a pipeline_status
+  output_file="$(mktemp "/tmp/kaggle-upload-output.XXXXXX.log")"
+
+  if "${KAGGLE_CMD[@]}" "$@" 2>&1 | tee "$output_file"; then
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
+  fi
+  command_status="${pipeline_status[0]}"
+
+  if [[ "$command_status" -eq 0 ]] && \
+     grep -Eq 'Dataset (creation|version creation) error:' "$output_file"; then
+    echo "Error: Kaggle CLI reported an upload failure despite returning exit code 0." >&2
+    command_status=1
+  fi
+
+  rm -f "$output_file"
+  return "$command_status"
+}
+
+probe_kaggle_dataset() {
+  local dataset_ref="$1"
+  local output_file
+  output_file="$(mktemp "/tmp/kaggle-dataset-probe.XXXXXX.log")"
+
+  if "${KAGGLE_CMD[@]}" datasets files -d "$dataset_ref" >"$output_file" 2>&1; then
+    rm -f "$output_file"
+    return 0
+  fi
+
+  if grep -Eqi \
+    '(^|[^0-9])404([^0-9]|$)|not found|does not exist|could not find (the )?dataset|dataset .* unavailable' \
+    "$output_file"; then
+    rm -f "$output_file"
+    return 1
+  fi
+
+  echo "Error: could not determine whether Kaggle dataset '$dataset_ref' exists." >&2
+  sed 's/^/  Kaggle: /' "$output_file" >&2
+  rm -f "$output_file"
+  return 2
+}
+
 upload_single_artifact() {
   local artifact_id="$1"
   local dataset_ref="$2"
@@ -56,10 +101,10 @@ upload_single_artifact() {
       else
         echo "Updating '$artifact_id' dataset."
       fi
-      "${KAGGLE_CMD[@]}" datasets version -p "$stage_dir" -m "${VERSION_MESSAGE} [$artifact_id]" -r "$DIR_MODE" || upload_status=$?
+      run_kaggle_upload_checked datasets version -p "$stage_dir" -m "${VERSION_MESSAGE} [$artifact_id]" -r "$DIR_MODE" || upload_status=$?
     else
       echo "Dataset '$dataset_ref' does not exist yet; creating with artifact '$item_name'."
-      "${KAGGLE_CMD[@]}" datasets create -p "$stage_dir" -r "$DIR_MODE" || upload_status=$?
+      run_kaggle_upload_checked datasets create -p "$stage_dir" -r "$DIR_MODE" || upload_status=$?
     fi
   fi
 
@@ -96,7 +141,7 @@ kaggle_upload_run_flow() {
   local current_fp previous_fp current_meta_fp previous_meta_fp
   local local_changed meta_changed dataset_ref dataset_exists
   local force_reason remote_missing should_upload
-  local failed_upload_status
+  local failed_upload_status probe_status
 
   cd "$REPO_ROOT"
 
@@ -174,8 +219,13 @@ kaggle_upload_run_flow() {
     DATASET_REF["$artifact_id"]="$dataset_ref"
 
     dataset_exists=0
-    if "${KAGGLE_CMD[@]}" datasets files -d "$dataset_ref" >/dev/null 2>&1; then
+    if probe_kaggle_dataset "$dataset_ref"; then
       dataset_exists=1
+    else
+      probe_status=$?
+      if [[ "$probe_status" -ne 1 ]]; then
+        return "$probe_status"
+      fi
     fi
     DATASET_EXISTS["$artifact_id"]="$dataset_exists"
 

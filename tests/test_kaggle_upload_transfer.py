@@ -10,7 +10,7 @@ TRANSFER_SH = REPO_ROOT / "syk4y-cli-lib" / "kaggle_upload_transfer.sh"
 
 
 class KaggleUploadTransferTests(unittest.TestCase):
-    def _run_upload(self, dataset_exists: int, kaggle_exit: int):
+    def _run_upload(self, dataset_exists: int, kaggle_exit: int, kaggle_output: str = ""):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_file = tmp_path / "artifact.bin"
@@ -23,6 +23,7 @@ class KaggleUploadTransferTests(unittest.TestCase):
             fake_kaggle.write_text(
                 "#!/usr/bin/env bash\n"
                 "echo \"$*\" >> \"$CMD_LOG\"\n"
+                "printf '%s\\n' \"$KAGGLE_OUTPUT\"\n"
                 "exit \"$KAGGLE_EXIT\"\n",
                 encoding="utf-8",
             )
@@ -55,6 +56,7 @@ echo "TRAP=$trap_output"
                     "FAKE_KAGGLE": str(fake_kaggle),
                     "CMD_LOG": str(cmd_log),
                     "KAGGLE_EXIT": str(kaggle_exit),
+                    "KAGGLE_OUTPUT": kaggle_output,
                 },
                 text=True,
                 capture_output=True,
@@ -88,6 +90,80 @@ echo "TRAP=$trap_output"
         self.assertIn("STATUS=7", proc.stdout)
         self.assertIn("datasets version -p", cmd_text)
         self.assertNotIn("Uploaded artifact source path:", proc.stdout)
+
+    def test_upload_single_artifact_rejects_cli_error_text_with_zero_exit(self):
+        proc, cmd_text, _source_file = self._run_upload(
+            dataset_exists=0,
+            kaggle_exit=0,
+            kaggle_output=(
+                "Dataset creation error: "
+                "Dataset url's dataset slugs and hashlink are all null"
+            ),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("STATUS=1", proc.stdout)
+        self.assertIn("datasets create -p", cmd_text)
+        self.assertNotIn("Uploaded artifact source path:", proc.stdout)
+        self.assertIn(
+            "Kaggle CLI reported an upload failure despite returning exit code 0",
+            proc.stderr,
+        )
+
+    def test_probe_kaggle_dataset_distinguishes_missing_from_other_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_kaggle = tmp_path / "fake-kaggle.sh"
+            fake_kaggle.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"$PROBE_OUTPUT\" >&2\n"
+                "exit \"$PROBE_EXIT\"\n",
+                encoding="utf-8",
+            )
+            fake_kaggle.chmod(0o755)
+
+            script = f"""
+set -u -o pipefail
+source "{TRANSFER_SH}"
+KAGGLE_CMD=("$FAKE_KAGGLE")
+set +e
+probe_kaggle_dataset "owner/dataset"
+status="$?"
+set -e
+echo "STATUS=$status"
+"""
+            missing = subprocess.run(
+                ["bash", "-lc", script],
+                cwd=REPO_ROOT,
+                env={
+                    **os.environ,
+                    "FAKE_KAGGLE": str(fake_kaggle),
+                    "PROBE_OUTPUT": "404 - Not Found",
+                    "PROBE_EXIT": "1",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(missing.returncode, 0, missing.stderr)
+            self.assertIn("STATUS=1", missing.stdout)
+            self.assertNotIn("could not determine", missing.stderr)
+
+            auth_error = subprocess.run(
+                ["bash", "-lc", script],
+                cwd=REPO_ROOT,
+                env={
+                    **os.environ,
+                    "FAKE_KAGGLE": str(fake_kaggle),
+                    "PROBE_OUTPUT": "401 - Unauthorized",
+                    "PROBE_EXIT": "1",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(auth_error.returncode, 0, auth_error.stderr)
+            self.assertIn("STATUS=2", auth_error.stdout)
+            self.assertIn("could not determine", auth_error.stderr)
 
     def test_run_flow_returns_upload_failure_and_skips_state_write(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -133,6 +209,7 @@ read_state_value() {{ printf '\\n'; }}
 extract_dataset_ref() {{
   "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" extract-dataset-ref "$1"
 }}
+probe_kaggle_dataset() {{ return 1; }}
 remote_missing_expected_artifacts() {{ printf '\\n'; }}
 write_state_file() {{ printf 'write-state\\n' >> "$STATE_LOG"; }}
 upload_single_artifact() {{ return 7; }}
