@@ -13,11 +13,13 @@ build_wheelhouse_if_needed() {
   fi
 
   local build_dir wheelhouse_tmp_zip req_out req_sanitized_out failed_reqs_file
+  local requirements_source uv_lock_path
   build_dir="$(mktemp -d "/tmp/wheelhouse-build.XXXXXX")"
   wheelhouse_tmp_zip="$(mktemp "/tmp/wheelhouse-archive.XXXXXX.zip")"
   req_out="$build_dir/_requirements.txt"
   req_sanitized_out="$build_dir/_requirements_sanitized.txt"
   failed_reqs_file="$(mktemp "/tmp/wheelhouse-failed.XXXXXX.txt")"
+  uv_lock_path="$REPO_ROOT/uv.lock"
   cleanup_wheel_tmp() {
     rm -rf "$build_dir"
     rm -f "$wheelhouse_tmp_zip"
@@ -25,23 +27,54 @@ build_wheelhouse_if_needed() {
   }
   trap cleanup_wheel_tmp RETURN
 
-  echo "Building wheelhouse inputs from: $WHEELHOUSE_PYTHON"
-  PIP_DISABLE_PIP_VERSION_CHECK=1 "$WHEELHOUSE_PYTHON" -m pip freeze --all --exclude-editable > "$req_out"
-  if [[ ! -s "$req_out" ]]; then
-    echo "Error: failed to freeze installed packages from $WHEELHOUSE_PYTHON" >&2
-    exit 1
+  if [[ -f "$uv_lock_path" ]]; then
+    if ! command -v uv >/dev/null 2>&1; then
+      echo "Error: '$uv_lock_path' exists but uv is not available." >&2
+      echo "Install uv or remove the lockfile only if this is not a uv-managed project." >&2
+      exit 1
+    fi
+
+    requirements_source="uv.lock"
+    echo "Building wheelhouse inputs from: $uv_lock_path"
+    if ! uv export \
+      --project "$REPO_ROOT" \
+      --locked \
+      --format requirements.txt \
+      --no-hashes \
+      --no-header \
+      --no-annotate \
+      --no-editable \
+      --no-emit-project \
+      --output-file "$req_out"; then
+      echo "Error: failed to export an up-to-date '$uv_lock_path'." >&2
+      echo "Run 'uv lock' in '$REPO_ROOT' and retry." >&2
+      exit 1
+    fi
+  else
+    requirements_source="pip freeze"
+    echo "No uv.lock found; building wheelhouse inputs from: $WHEELHOUSE_PYTHON"
+    PIP_DISABLE_PIP_VERSION_CHECK=1 "$WHEELHOUSE_PYTHON" -m pip freeze --all --exclude-editable > "$req_out"
+    if [[ ! -s "$req_out" ]]; then
+      echo "Error: failed to freeze installed packages from $WHEELHOUSE_PYTHON" >&2
+      exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+      sanitize-wheelhouse-requirements \
+      "$req_out" \
+      "$req_sanitized_out"
+    if [[ ! -s "$req_sanitized_out" ]]; then
+      echo "Error: no valid portable requirements found after sanitization." >&2
+      echo "Hint: install required packages into '$WHEELHOUSE_PYTHON' first, then retry." >&2
+      exit 1
+    fi
+    req_out="$req_sanitized_out"
   fi
 
-  "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-    sanitize-wheelhouse-requirements \
-    "$req_out" \
-    "$req_sanitized_out"
-  if [[ ! -s "$req_sanitized_out" ]]; then
-    echo "Error: no valid portable requirements found after sanitization." >&2
-    echo "Hint: install required packages into '$WHEELHOUSE_PYTHON' first, then retry." >&2
+  if [[ ! -s "$req_out" ]]; then
+    echo "Error: no dependencies found from $requirements_source." >&2
     exit 1
   fi
-  req_out="$req_sanitized_out"
 
   mapfile -t EXTRA_INDEXES < <(
     "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" pyproject-extra-indexes "$REPO_ROOT/pyproject.toml"
@@ -49,8 +82,13 @@ build_wheelhouse_if_needed() {
 
   WHEELHOUSE_INPUT_HASH="$({
     "$WHEELHOUSE_PYTHON" -V 2>&1
+    printf 'requirements-source=%s\n' "$requirements_source"
     cat "$req_out"
     printf '%s\n' "${EXTRA_INDEXES[@]}"
+    if [[ "$requirements_source" == "uv.lock" ]]; then
+      uv --version
+      sha256sum "$uv_lock_path"
+    fi
   } | sha256sum | awk '{print $1}')"
 
   if [[ -f "$WHEELHOUSE_PATH" ]] && [[ -n "$prev_input_hash" ]] && [[ "$prev_input_hash" == "$WHEELHOUSE_INPUT_HASH" ]]; then
@@ -82,17 +120,22 @@ build_wheelhouse_if_needed() {
     if ! printf '%s\0' "${REQ_ITEMS[@]}" \
       | xargs -0 -P "$WHEEL_JOBS" -I{} bash -lc '
           req="$1"
-          shift
+          repo_root="$2"
+          shift 2
+          cd "$repo_root"
           if ! env PIP_DISABLE_PIP_VERSION_CHECK=1 "$@" "$req"; then
             printf "%s\n" "$req" >> "$FAILED_REQS_FILE"
           fi
-        ' _ "{}" "${pip_cmd_base[@]}" "${extra_index_args[@]}"; then
+        ' _ "{}" "$REPO_ROOT" "${pip_cmd_base[@]}" "${extra_index_args[@]}"; then
       true
     fi
   else
     local req
     for req in "${REQ_ITEMS[@]}"; do
-      if ! env PIP_DISABLE_PIP_VERSION_CHECK=1 "${pip_cmd_base[@]}" "${extra_index_args[@]}" "$req"; then
+      if ! (
+        cd "$REPO_ROOT"
+        env PIP_DISABLE_PIP_VERSION_CHECK=1 "${pip_cmd_base[@]}" "${extra_index_args[@]}" "$req"
+      ); then
         printf '%s\n' "$req" >> "$failed_reqs_file"
       fi
     done

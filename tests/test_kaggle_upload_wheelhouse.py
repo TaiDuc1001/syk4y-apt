@@ -122,6 +122,217 @@ post_return_probe
 
             # This should pass when RETURN trap handling is correct.
             self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("No uv.lock found", proc.stdout)
+
+    def test_build_wheelhouse_prefers_uv_lock_and_preserves_relative_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_python = fake_bin / "fake-python.sh"
+            fake_uv = fake_bin / "uv"
+            command_log = tmp_path / "commands.log"
+            repo_dir = tmp_path / "repo"
+            upload_root = tmp_path / "upload"
+            wheels_dir = repo_dir / "wheels"
+            fake_bin.mkdir()
+            wheels_dir.mkdir(parents=True)
+            upload_root.mkdir()
+            (repo_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+            (repo_dir / "pyproject.toml").write_text(
+                '[project]\nname = "app"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            (wheels_dir / "localpkg-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            fake_uv.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  echo "uv 0.test"
+  exit 0
+fi
+if [[ "${1:-}" == "export" ]]; then
+  output_file=""
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--output-file" ]]; then
+      output_file="$arg"
+      break
+    fi
+    prev="$arg"
+  done
+  printf 'uv-export\\n' >> "$COMMAND_LOG"
+  printf 'wheels/localpkg-0.1.0-py3-none-any.whl\\n' > "$output_file"
+  exit 0
+fi
+echo "unexpected uv invocation: $*" >&2
+exit 2
+""",
+                encoding="utf-8",
+            )
+            fake_uv.chmod(0o755)
+
+            fake_python.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-V" ]]; then
+  echo "Python 3.12.0"
+  exit 0
+fi
+if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "freeze" ]]; then
+  printf 'pip-freeze\\n' >> "$COMMAND_LOG"
+  exit 2
+fi
+if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "wheel" ]]; then
+  wheel_dir=""
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--wheel-dir" ]]; then
+      wheel_dir="$arg"
+    fi
+    prev="$arg"
+  done
+  req="${!#}"
+  printf 'pip-wheel|%s|%s\\n' "$PWD" "$req" >> "$COMMAND_LOG"
+  mkdir -p "$wheel_dir"
+  touch "$wheel_dir/localpkg-0.1.0-py3-none-any.whl"
+  exit 0
+fi
+if [[ "${1:-}" == *"/kaggle_upload_py_cli.py" ]]; then
+  case "${2:-}" in
+    pyproject-extra-indexes)
+      ;;
+    pack-wheelhouse-zip)
+      printf 'zip-data\\n' > "$4"
+      ;;
+    *)
+      echo "unexpected helper command: ${2:-}" >&2
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
+echo "unexpected invocation: $*" >&2
+exit 2
+""",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+
+            script = f"""
+set -euo pipefail
+PATH="$FAKE_BIN:$PATH"
+SCRIPT_DIR="{REPO_ROOT}"
+source "{WHEELHOUSE_SH}"
+
+REPO_ROOT="$REPO_DIR"
+PYTHON_BIN="$FAKE_PY"
+WHEELHOUSE_PYTHON="$FAKE_PY"
+WHEEL_JOBS=1
+WHEEL_FAIL_ON_MISSING=0
+WHEELHOUSE_ZIP_MODE="store"
+WHEELHOUSE_DATASET_DIR="$UPLOAD_ROOT/repo-wheelhouse"
+WHEELHOUSE_PATH="$WHEELHOUSE_DATASET_DIR/wheelhouse.zip"
+WHEELHOUSE_INPUT_HASH=""
+
+build_wheelhouse_if_needed ""
+"""
+
+            proc = run_bash(
+                script,
+                env={
+                    "REPO_DIR": str(repo_dir),
+                    "UPLOAD_ROOT": str(upload_root),
+                    "FAKE_PY": str(fake_python),
+                    "FAKE_BIN": str(fake_bin),
+                    "COMMAND_LOG": str(command_log),
+                },
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            commands = command_log.read_text(encoding="utf-8").splitlines()
+            self.assertIn("uv-export", commands)
+            self.assertNotIn("pip-freeze", commands)
+            self.assertIn(
+                f"pip-wheel|{repo_dir}|wheels/localpkg-0.1.0-py3-none-any.whl",
+                commands,
+            )
+
+    def test_build_wheelhouse_does_not_fallback_when_uv_lock_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_python = fake_bin / "fake-python.sh"
+            fake_uv = fake_bin / "uv"
+            command_log = tmp_path / "commands.log"
+            repo_dir = tmp_path / "repo"
+            upload_root = tmp_path / "upload"
+            fake_bin.mkdir()
+            repo_dir.mkdir()
+            upload_root.mkdir()
+            (repo_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+
+            fake_uv.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "export" ]]; then
+  printf 'uv-export-failed\\n' >> "$COMMAND_LOG"
+  exit 1
+fi
+echo "uv 0.test"
+""",
+                encoding="utf-8",
+            )
+            fake_uv.chmod(0o755)
+
+            fake_python.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "freeze" ]]; then
+  printf 'pip-freeze\\n' >> "$COMMAND_LOG"
+  echo "alpha==1.0.0"
+  exit 0
+fi
+echo "Python 3.12.0"
+""",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+
+            script = f"""
+set -euo pipefail
+PATH="$FAKE_BIN:$PATH"
+SCRIPT_DIR="{REPO_ROOT}"
+source "{WHEELHOUSE_SH}"
+
+REPO_ROOT="$REPO_DIR"
+PYTHON_BIN="$FAKE_PY"
+WHEELHOUSE_PYTHON="$FAKE_PY"
+WHEEL_JOBS=1
+WHEEL_FAIL_ON_MISSING=0
+WHEELHOUSE_ZIP_MODE="store"
+WHEELHOUSE_DATASET_DIR="$UPLOAD_ROOT/repo-wheelhouse"
+WHEELHOUSE_PATH="$WHEELHOUSE_DATASET_DIR/wheelhouse.zip"
+WHEELHOUSE_INPUT_HASH=""
+
+build_wheelhouse_if_needed ""
+"""
+
+            proc = run_bash(
+                script,
+                env={
+                    "REPO_DIR": str(repo_dir),
+                    "UPLOAD_ROOT": str(upload_root),
+                    "FAKE_PY": str(fake_python),
+                    "FAKE_BIN": str(fake_bin),
+                    "COMMAND_LOG": str(command_log),
+                },
+            )
+
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Run 'uv lock'", proc.stderr)
+            commands = command_log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(commands, ["uv-export-failed"])
 
 
 if __name__ == "__main__":

@@ -134,6 +134,13 @@ syk4y kaggle upload --dir-mode zip
 syk4y kaggle upload --build-wheel-only
 ```
 
+Wheelhouse dependency source:
+
+- If `uv.lock` exists, syk4y exports the locked dependencies with `uv export --locked`.
+  The lockfile must be up to date, and local/Git/URL sources are preserved.
+- If `uv.lock` does not exist, syk4y falls back to the installed environment from
+  `pip freeze`.
+
 ### 4) Install dependencies offline from wheelhouse
 
 ```bash
