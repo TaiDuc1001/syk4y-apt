@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -351,21 +352,15 @@ def cmd_sanitize_wheelhouse_requirements(
     dst = Path(output_path)
     repo = Path(repo_root) if repo_root else None
 
-    try:
-        from importlib import metadata as importlib_metadata
-    except Exception:
-        importlib_metadata = None
-
     installed_versions = {}
-    if importlib_metadata is not None:
-        try:
-            for dist in importlib_metadata.distributions():
-                name = dist.metadata.get("Name")
-                version = dist.version
-                if isinstance(name, str) and isinstance(version, str):
-                    installed_versions[_normalize_dist_name(name)] = version
-        except Exception:
-            installed_versions = {}
+    try:
+        for dist in importlib_metadata.distributions():
+            name = dist.metadata.get("Name")
+            version = dist.version
+            if isinstance(name, str) and isinstance(version, str):
+                installed_versions[_normalize_dist_name(name)] = version
+    except Exception:
+        installed_versions = {}
 
     out_lines = []
     seen = set()

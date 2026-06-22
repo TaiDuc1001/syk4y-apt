@@ -125,7 +125,7 @@ post_return_probe
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("No uv.lock found", proc.stdout)
 
-    def test_build_wheelhouse_prefers_uv_lock_and_preserves_relative_source(self):
+    def test_build_wheelhouse_prefers_uv_lock_and_copies_repo_wheel(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_bin = tmp_path / "bin"
@@ -257,9 +257,13 @@ build_wheelhouse_if_needed ""
             commands = command_log.read_text(encoding="utf-8").splitlines()
             self.assertIn("uv-export", commands)
             self.assertNotIn("pip-freeze", commands)
-            self.assertIn(
+            self.assertNotIn(
                 f"pip-wheel|{repo_dir}|wheels/localpkg-0.1.0-py3-none-any.whl",
                 commands,
+            )
+            self.assertIn(
+                "Copying local wheel into wheelhouse: wheels/localpkg-0.1.0-py3-none-any.whl",
+                proc.stdout,
             )
             wheelhouse_path = upload_root / "repo-wheelhouse" / "wheelhouse.zip"
             with zipfile.ZipFile(wheelhouse_path) as archive:

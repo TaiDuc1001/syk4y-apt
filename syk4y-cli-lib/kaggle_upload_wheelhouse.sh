@@ -14,6 +14,7 @@ build_wheelhouse_if_needed() {
 
   local build_dir wheelhouse_tmp_zip req_out req_sanitized_out failed_reqs_file
   local requirements_source uv_lock_path
+  local req local_wheel_path
   build_dir="$(mktemp -d "/tmp/wheelhouse-build.XXXXXX")"
   wheelhouse_tmp_zip="$(mktemp "/tmp/wheelhouse-archive.XXXXXX.zip")"
   req_out="$build_dir/_requirements.txt"
@@ -85,6 +86,18 @@ build_wheelhouse_if_needed() {
     "$WHEELHOUSE_PYTHON" -V 2>&1
     printf 'requirements-source=%s\n' "$requirements_source"
     cat "$req_out"
+    while IFS= read -r req; do
+      [[ "$req" == *.whl ]] || continue
+      if [[ "$req" == /* ]]; then
+        local_wheel_path="$req"
+      else
+        local_wheel_path="$REPO_ROOT/$req"
+      fi
+      if [[ -f "$local_wheel_path" ]]; then
+        printf 'local-wheel=%s\n' "$req"
+        sha256sum "$local_wheel_path"
+      fi
+    done < "$req_out"
     printf '%s\n' "${EXTRA_INDEXES[@]}"
     if [[ "$requirements_source" == "uv.lock" ]]; then
       uv --version
@@ -108,6 +121,26 @@ build_wheelhouse_if_needed() {
     exit 1
   fi
 
+  local -a PIP_REQ_ITEMS
+  PIP_REQ_ITEMS=()
+  for req in "${REQ_ITEMS[@]}"; do
+    local_wheel_path=""
+    if [[ "$req" == *.whl ]]; then
+      if [[ "$req" == /* ]]; then
+        local_wheel_path="$req"
+      else
+        local_wheel_path="$REPO_ROOT/$req"
+      fi
+      if [[ -f "$local_wheel_path" ]]; then
+        echo "Copying local wheel into wheelhouse: $req"
+        cp -f "$local_wheel_path" "$build_dir/"
+        continue
+      fi
+    fi
+    PIP_REQ_ITEMS+=("$req")
+  done
+  REQ_ITEMS=("${PIP_REQ_ITEMS[@]}")
+
   local -a pip_cmd_base extra_index_args
   pip_cmd_base=("$WHEELHOUSE_PYTHON" -m pip wheel --no-deps --progress-bar off --wheel-dir "$build_dir")
   extra_index_args=()
@@ -115,8 +148,10 @@ build_wheelhouse_if_needed() {
     extra_index_args+=(--extra-index-url "$url")
   done
 
-  echo "Fetching/building wheels with parallel jobs: $WHEEL_JOBS"
-  if [[ "$WHEEL_JOBS" -gt 1 ]] && command -v xargs >/dev/null 2>&1; then
+  if [[ "${#REQ_ITEMS[@]}" -eq 0 ]]; then
+    echo "All wheelhouse inputs were local wheels."
+  elif [[ "$WHEEL_JOBS" -gt 1 ]] && command -v xargs >/dev/null 2>&1; then
+    echo "Fetching/building wheels with parallel jobs: $WHEEL_JOBS"
     export FAILED_REQS_FILE="$failed_reqs_file"
     if ! printf '%s\0' "${REQ_ITEMS[@]}" \
       | xargs -0 -P "$WHEEL_JOBS" -I{} bash -lc '
@@ -131,7 +166,7 @@ build_wheelhouse_if_needed() {
       true
     fi
   else
-    local req
+    echo "Fetching/building wheels with parallel jobs: $WHEEL_JOBS"
     for req in "${REQ_ITEMS[@]}"; do
       if ! (
         cd "$REPO_ROOT"
