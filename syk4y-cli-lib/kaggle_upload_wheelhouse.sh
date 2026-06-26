@@ -51,7 +51,9 @@ build_wheelhouse_if_needed() {
       # Run the build inside docker.
       # We mount REPO_ROOT to /workspace. We mount /tmp to /tmp to share temp files/outputs.
       # We pass WHEEL_ARCH=native to prevent recursive docker calls inside the container.
-      docker run --rm \
+      local docker_err
+      docker_err="$(mktemp "/tmp/docker-build-error.XXXXXX.log")"
+      if ! docker run --rm \
         --platform "$docker_platform" \
         -v "$REPO_ROOT:/workspace" \
         -v /tmp:/tmp \
@@ -63,7 +65,26 @@ build_wheelhouse_if_needed() {
         -e WHEELHOUSE_ZIP_MODE="$WHEELHOUSE_ZIP_MODE" \
         -e WHEEL_FAIL_ON_MISSING="$WHEEL_FAIL_ON_MISSING" \
         python:3.10-slim \
-        bash -c "pip install uv && ./syk4y-kaggle upload --repo-root /workspace --upload-dir $UPLOAD_ROOT --build-wheel-only"
+        bash -c "pip install uv && ./syk4y-kaggle upload --repo-root /workspace --upload-dir $UPLOAD_ROOT --build-wheel-only" 2>"$docker_err"; then
+        
+        local err_msg
+        err_msg="$(cat "$docker_err")"
+        echo "$err_msg" >&2
+        rm -f "$docker_err"
+        
+        if [[ "$err_msg" == *"exec format error"* ]]; then
+          echo "" >&2
+          echo "======================================================================" >&2
+          echo "Error: QEMU user-space emulation for $target_norm is not configured on your host." >&2
+          echo "To run $docker_platform containers on your $host_norm machine, please register QEMU:" >&2
+          echo "  docker run --rm --privileged multiarch/qemu-user-static --reset -p yes" >&2
+          echo "Or install native package (Debian/Ubuntu):" >&2
+          echo "  sudo apt-get update && sudo apt-get install -y qemu-user-static binfmt-support" >&2
+          echo "======================================================================" >&2
+        fi
+        exit 1
+      fi
+      rm -f "$docker_err"
 
       return
     fi
