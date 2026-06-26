@@ -369,6 +369,41 @@ exit 0
             )
             fake_docker.chmod(0o755)
 
+            # Mock python3 binary
+            fake_python = fake_bin / "python3"
+            fake_python.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "freeze" ]]; then
+  echo "alpha==1.0.0"
+  exit 0
+fi
+if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "download" ]]; then
+  exit 1
+fi
+if [[ "${1:-}" == *"/kaggle_upload_py_cli.py" ]]; then
+  case "${2:-}" in
+    sanitize-wheelhouse-requirements)
+      cp "$3" "$4"
+      ;;
+    pyproject-extra-indexes)
+      ;;
+    pack-wheelhouse-zip)
+      printf 'zip-data\\n' > "$4"
+      ;;
+    *)
+      echo "unexpected helper command: ${2:-}" >&2
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
+echo "Python 3.10.0"
+""",
+                encoding="utf-8"
+            )
+            fake_python.chmod(0o755)
+
             # Determine opposite arch
             import platform
             host_machine = platform.machine()

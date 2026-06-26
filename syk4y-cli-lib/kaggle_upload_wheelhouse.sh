@@ -2,6 +2,10 @@
 
 build_wheelhouse_if_needed() {
   local prev_input_hash="$1"
+  local -a EXTRA_INDEXES
+  mapfile -t EXTRA_INDEXES < <(
+    "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" pyproject-extra-indexes "$REPO_ROOT/pyproject.toml"
+  )
  
   # Check if we need to build via Docker for a different architecture
   if [[ -n "${WHEEL_ARCH:-}" ]] && [[ "$WHEEL_ARCH" != "native" ]]; then
@@ -48,9 +52,11 @@ build_wheelhouse_if_needed() {
         exit 1
       fi
 
-      # Natively export requirements on the host to avoid QEMU uv segfaults
-      local host_req_out uv_lock_path
-      host_req_out="$(mktemp "/tmp/wheelhouse-host-req.XXXXXX.txt")"
+      # 1. Natively export requirements on the host to avoid QEMU uv segfaults
+      local host_req_out uv_lock_path temp_dir
+      temp_dir="$REPO_ROOT/.syk4y-temp"
+      mkdir -p "$temp_dir"
+      host_req_out="$temp_dir/wheelhouse-host-req.txt"
       uv_lock_path="$REPO_ROOT/uv.lock"
       
       if [[ -f "$uv_lock_path" ]]; then
@@ -66,7 +72,7 @@ build_wheelhouse_if_needed() {
           --no-emit-project \
           --output-file "$host_req_out"; then
           echo "Error: failed to export '$uv_lock_path' on host." >&2
-          rm -f "$host_req_out"
+          rm -rf "$temp_dir"
           exit 1
         fi
       else
@@ -74,57 +80,181 @@ build_wheelhouse_if_needed() {
         PIP_DISABLE_PIP_VERSION_CHECK=1 "$WHEELHOUSE_PYTHON" -m pip freeze --all --exclude-editable > "$host_req_out"
       fi
 
-      # Run the build inside docker.
-      # We mount REPO_ROOT to /workspace. We mount /tmp to /tmp to share temp files/outputs.
-      # We pass WHEEL_ARCH=native to prevent recursive docker calls inside the container.
-      local container_upload_root="$UPLOAD_ROOT"
-      if [[ "$container_upload_root" == "$REPO_ROOT"* ]]; then
-        container_upload_root="/workspace${container_upload_root#$REPO_ROOT}"
+      # 2. Setup build directory and sanitize requirements on host
+      local build_dir wheelhouse_tmp_zip req_out req_sanitized_out docker_req_out
+      build_dir="$temp_dir/wheelhouse-build"
+      mkdir -p "$build_dir"
+      wheelhouse_tmp_zip="$temp_dir/wheelhouse-archive.zip"
+      req_out="$build_dir/_requirements.txt"
+      req_sanitized_out="$build_dir/_requirements_sanitized.txt"
+      docker_req_out="$build_dir/_requirements_docker.txt"
+
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+        sanitize-wheelhouse-requirements \
+        "$host_req_out" \
+        "$req_sanitized_out" \
+        "$REPO_ROOT"
+
+      mapfile -t REQ_ITEMS < <(
+        sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' "$req_sanitized_out" \
+          | grep -Ev '^(#|$|-)'
+      )
+
+      # 3. Determine target platform details for pip download on host
+      local pip_platform pip_py_version pip_impl pip_abi
+      pip_py_version="3.10"
+      pip_impl="cp"
+      pip_abi="cp310"
+      if [[ "$target_norm" == "x86_64" ]]; then
+        pip_platform="manylinux2014_x86_64"
+      elif [[ "$target_norm" == "aarch64" ]]; then
+        pip_platform="manylinux2014_aarch64"
+      else
+        pip_platform="$target_norm"
       fi
 
-      local docker_err
-      docker_err="$(mktemp "/tmp/docker-build-error.XXXXXX.log")"
-      if ! docker run --rm \
-        --platform "$docker_platform" \
-        -v "$REPO_ROOT:/workspace" \
-        -v "$SCRIPT_DIR:/syk4y-toolkit" \
-        -v /tmp:/tmp \
-        -w /workspace \
-        -e PYTHON_BIN=python3 \
-        -e WHEELHOUSE_PYTHON=python3 \
-        -e WHEEL_ARCH=native \
-        -e EXPORTED_REQUIREMENTS_PATH="$host_req_out" \
-        -e WHEEL_JOBS="$WHEEL_JOBS" \
-        -e WHEELHOUSE_ZIP_MODE="$WHEELHOUSE_ZIP_MODE" \
-        -e WHEEL_FAIL_ON_MISSING="$WHEEL_FAIL_ON_MISSING" \
-        python:3.10-slim \
-        /syk4y-toolkit/syk4y-kaggle upload --repo-root /workspace --upload-dir "$container_upload_root" --build-wheel-only 2>"$docker_err"; then
-        
-        local err_msg
-        err_msg="$(cat "$docker_err")"
-        echo "$err_msg" >&2
-        rm -f "$docker_err"
-        rm -f "$host_req_out"
-        
-        if [[ "$err_msg" == *"exec format error"* ]]; then
-          local install_arch="$target_norm"
-          if [[ "$install_arch" == "x86_64" ]]; then install_arch="amd64"; fi
-          if [[ "$install_arch" == "aarch64" ]]; then install_arch="arm64"; fi
-
-          echo "" >&2
-          echo "======================================================================" >&2
-          echo "Error: QEMU user-space emulation for $target_norm is not configured on your host." >&2
-          echo "To run $docker_platform containers on your $host_norm machine, please register QEMU:" >&2
-          echo "  docker run --privileged --rm tonistiigi/binfmt --install $install_arch" >&2
-          echo "Or install native package (Debian/Ubuntu):" >&2
-          echo "  sudo apt-get update && sudo apt-get install -y qemu-user-static binfmt-support" >&2
-          echo "======================================================================" >&2
+      # 4. Attempt to download pre-built wheels natively on host in parallel
+      local -a remaining_reqs
+      remaining_reqs=()
+      
+      local -a PIP_REQ_ITEMS
+      PIP_REQ_ITEMS=()
+      for req in "${REQ_ITEMS[@]}"; do
+        if [[ "$req" == *.whl ]]; then
+          local_wheel_path=""
+          if [[ "$req" == /* ]]; then
+            local_wheel_path="$req"
+          else
+            local_wheel_path="$REPO_ROOT/$req"
+          fi
+          if [[ -f "$local_wheel_path" ]]; then
+            echo "Copying local wheel: $req"
+            cp -f "$local_wheel_path" "$build_dir/"
+          fi
+          continue
         fi
-        exit 1
-      fi
-      rm -f "$docker_err"
-      rm -f "$host_req_out"
+        PIP_REQ_ITEMS+=("$req")
+      done
 
+      if [[ "${#PIP_REQ_ITEMS[@]}" -gt 0 ]]; then
+        local host_failed_reqs_file
+        host_failed_reqs_file="$(mktemp "$temp_dir/host-failed.XXXXXX.txt")"
+        export HOST_FAILED_REQS_FILE="$host_failed_reqs_file"
+        
+        local -a extra_index_args
+        extra_index_args=()
+        for url in "${EXTRA_INDEXES[@]}"; do
+          extra_index_args+=(--extra-index-url "$url")
+        done
+
+        echo "Downloading pre-built wheels natively on host with parallel jobs: $WHEEL_JOBS"
+        if ! printf '%s\0' "${PIP_REQ_ITEMS[@]}" \
+          | xargs -0 -P "$WHEEL_JOBS" -I{} bash -c '
+              req="$1"
+              repo_root="$2"
+              build_dir="$3"
+              pip_platform="$4"
+              pip_py_version="$5"
+              pip_impl="$6"
+              pip_abi="$7"
+              shift 7
+              
+              cd "$repo_root"
+              if ! env PIP_DISABLE_PIP_VERSION_CHECK=1 "$@" \
+                --only-binary=:all: \
+                --platform "$pip_platform" \
+                --python-version "$pip_py_version" \
+                --implementation "$pip_impl" \
+                --abi "$pip_abi" \
+                --no-deps \
+                -d "$build_dir" \
+                "$req" >/dev/null 2>&1; then
+                printf "%s\n" "$req" >> "$HOST_FAILED_REQS_FILE"
+              else
+                echo "  Downloaded: $req (native)"
+              fi
+            ' _ "{}" "$REPO_ROOT" "$build_dir" "$pip_platform" "$pip_py_version" "$pip_impl" "$pip_abi" "$WHEELHOUSE_PYTHON" -m pip download "${extra_index_args[@]}"; then
+          true
+        fi
+        
+        if [[ -f "$host_failed_reqs_file" ]]; then
+          mapfile -t remaining_reqs < <(sort -u "$host_failed_reqs_file" | sed '/^$/d')
+          rm -f "$host_failed_reqs_file"
+        fi
+      fi
+
+      # 5. Build remaining wheels inside Docker if any
+      if [[ "${#remaining_reqs[@]}" -gt 0 ]]; then
+        echo "Building ${#remaining_reqs[@]} remaining package(s) from source inside Docker container ($docker_platform)..."
+        # Write remaining requirements to a new file for Docker
+        printf '%s\n' "${remaining_reqs[@]}" > "$docker_req_out"
+
+        local container_upload_root="$UPLOAD_ROOT"
+        if [[ "$container_upload_root" == "$REPO_ROOT"* ]]; then
+          container_upload_root="/workspace${container_upload_root#$REPO_ROOT}"
+        fi
+
+        local docker_err
+        docker_err="$(mktemp "/tmp/docker-build-error.XXXXXX.log")"
+        if ! docker run --rm \
+          --platform "$docker_platform" \
+          -v "$REPO_ROOT:/workspace" \
+          -v "$SCRIPT_DIR:/syk4y-toolkit" \
+          -w /workspace \
+          -e PYTHON_BIN=python3 \
+          -e WHEELHOUSE_PYTHON=python3 \
+          -e WHEEL_ARCH=native \
+          -e EXPORTED_REQUIREMENTS_PATH="/workspace/.syk4y-temp/wheelhouse-build/_requirements_docker.txt" \
+          -e OVERRIDE_BUILD_DIR="/workspace/.syk4y-temp/wheelhouse-build" \
+          -e WHEEL_JOBS="$WHEEL_JOBS" \
+          -e WHEELHOUSE_ZIP_MODE="$WHEELHOUSE_ZIP_MODE" \
+          -e WHEEL_FAIL_ON_MISSING="$WHEEL_FAIL_ON_MISSING" \
+          python:3.10-slim \
+          /syk4y-toolkit/syk4y-kaggle upload --repo-root /workspace --upload-dir "$container_upload_root" --build-wheel-only 2>"$docker_err"; then
+          
+          local err_msg
+          err_msg="$(cat "$docker_err")"
+          echo "$err_msg" >&2
+          rm -f "$docker_err"
+          rm -rf "$temp_dir"
+          
+          if [[ "$err_msg" == *"exec format error"* ]]; then
+            local install_arch="$target_norm"
+            if [[ "$install_arch" == "x86_64" ]]; then install_arch="amd64"; fi
+            if [[ "$install_arch" == "aarch64" ]]; then install_arch="arm64"; fi
+
+            echo "" >&2
+            echo "======================================================================" >&2
+            echo "Error: QEMU user-space emulation for $target_norm is not configured on your host." >&2
+            echo "To run $docker_platform containers on your $host_norm machine, please register QEMU:" >&2
+            echo "  docker run --privileged --rm tonistiigi/binfmt --install $install_arch" >&2
+            echo "Or install native package (Debian/Ubuntu):" >&2
+            echo "  sudo apt-get update && sudo apt-get install -y qemu-user-static binfmt-support" >&2
+            echo "======================================================================" >&2
+          fi
+          exit 1
+        fi
+        rm -f "$docker_err"
+      else
+        echo "All wheels downloaded natively on host. Bypassing Docker container build."
+      fi
+
+      # 6. Pack the wheelhouse and cleanup
+      echo "Packing wheelhouse.zip"
+      # Write a sanitized requirements list inside build_dir so the archive has it
+      cp -f "$req_sanitized_out" "$build_dir/_requirements.txt"
+
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+        pack-wheelhouse-zip \
+        "$build_dir" \
+        "$wheelhouse_tmp_zip" \
+        "$WHEELHOUSE_ZIP_MODE"
+
+      mkdir -p "$WHEELHOUSE_DATASET_DIR"
+      mv -f "$wheelhouse_tmp_zip" "$WHEELHOUSE_PATH"
+      echo "Updated wheelhouse archive: $WHEELHOUSE_PATH"
+
+      rm -rf "$temp_dir"
       return
     fi
   fi
@@ -141,14 +271,21 @@ build_wheelhouse_if_needed() {
   local build_dir wheelhouse_tmp_zip req_out req_sanitized_out failed_reqs_file
   local requirements_source uv_lock_path
   local req local_wheel_path
-  build_dir="$(mktemp -d "/tmp/wheelhouse-build.XXXXXX")"
+  if [[ -n "${OVERRIDE_BUILD_DIR:-}" ]]; then
+    build_dir="$OVERRIDE_BUILD_DIR"
+    mkdir -p "$build_dir"
+  else
+    build_dir="$(mktemp -d "/tmp/wheelhouse-build.XXXXXX")"
+  fi
   wheelhouse_tmp_zip="$(mktemp "/tmp/wheelhouse-archive.XXXXXX.zip")"
   req_out="$build_dir/_requirements.txt"
   req_sanitized_out="$build_dir/_requirements_sanitized.txt"
   failed_reqs_file="$(mktemp "/tmp/wheelhouse-failed.XXXXXX.txt")"
   uv_lock_path="$REPO_ROOT/uv.lock"
   cleanup_wheel_tmp() {
-    rm -rf "$build_dir"
+    if [[ -z "${OVERRIDE_BUILD_DIR:-}" ]]; then
+      rm -rf "$build_dir"
+    fi
     rm -f "$wheelhouse_tmp_zip"
     rm -f "$failed_reqs_file"
   }
@@ -208,9 +345,7 @@ build_wheelhouse_if_needed() {
     exit 1
   fi
 
-  mapfile -t EXTRA_INDEXES < <(
-    "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" pyproject-extra-indexes "$REPO_ROOT/pyproject.toml"
-  )
+  # EXTRA_INDEXES parsed at the top of the function
 
   WHEELHOUSE_INPUT_HASH="$({
     "$WHEELHOUSE_PYTHON" -V 2>&1
@@ -284,7 +419,7 @@ build_wheelhouse_if_needed() {
     echo "Fetching/building wheels with parallel jobs: $WHEEL_JOBS"
     export FAILED_REQS_FILE="$failed_reqs_file"
     if ! printf '%s\0' "${REQ_ITEMS[@]}" \
-      | xargs -0 -P "$WHEEL_JOBS" -I{} bash -lc '
+      | xargs -0 -P "$WHEEL_JOBS" -I{} bash -c '
           req="$1"
           repo_root="$2"
           shift 2
