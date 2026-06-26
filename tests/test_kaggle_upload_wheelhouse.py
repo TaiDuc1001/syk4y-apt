@@ -417,6 +417,8 @@ build_wheelhouse_if_needed ""
             docker_calls = docker_log.read_text(encoding="utf-8").splitlines()
             self.assertTrue(any("image inspect python:3.10-slim" in call for call in docker_calls))
             self.assertTrue(any(f"run --rm --platform {expected_platform}" in call for call in docker_calls))
+            self.assertTrue(any(":/syk4y-toolkit" in call for call in docker_calls))
+            self.assertTrue(any("/syk4y-toolkit/syk4y-kaggle" in call for call in docker_calls))
 
 
 if __name__ == "__main__":

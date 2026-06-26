@@ -51,11 +51,17 @@ build_wheelhouse_if_needed() {
       # Run the build inside docker.
       # We mount REPO_ROOT to /workspace. We mount /tmp to /tmp to share temp files/outputs.
       # We pass WHEEL_ARCH=native to prevent recursive docker calls inside the container.
+      local container_upload_root="$UPLOAD_ROOT"
+      if [[ "$container_upload_root" == "$REPO_ROOT"* ]]; then
+        container_upload_root="/workspace${container_upload_root#$REPO_ROOT}"
+      fi
+
       local docker_err
       docker_err="$(mktemp "/tmp/docker-build-error.XXXXXX.log")"
       if ! docker run --rm \
         --platform "$docker_platform" \
         -v "$REPO_ROOT:/workspace" \
+        -v "$SCRIPT_DIR:/syk4y-toolkit" \
         -v /tmp:/tmp \
         -w /workspace \
         -e PYTHON_BIN=python3 \
@@ -65,7 +71,7 @@ build_wheelhouse_if_needed() {
         -e WHEELHOUSE_ZIP_MODE="$WHEELHOUSE_ZIP_MODE" \
         -e WHEEL_FAIL_ON_MISSING="$WHEEL_FAIL_ON_MISSING" \
         python:3.10-slim \
-        bash -c "pip install uv && ./syk4y-kaggle upload --repo-root /workspace --upload-dir $UPLOAD_ROOT --build-wheel-only" 2>"$docker_err"; then
+        bash -c "pip install uv && /syk4y-toolkit/syk4y-kaggle upload --repo-root /workspace --upload-dir $container_upload_root --build-wheel-only" 2>"$docker_err"; then
         
         local err_msg
         err_msg="$(cat "$docker_err")"
