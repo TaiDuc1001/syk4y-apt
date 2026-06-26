@@ -159,6 +159,46 @@ class KaggleUploadPyCliTests(unittest.TestCase):
                 metadata.read_text(encoding="utf-8"),
             )
 
+    def test_pack_wheelhouse_zip_sanitizes_local_wheel_paths(self):
+        module = load_py_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            source_dir.mkdir()
+
+            req_txt = source_dir / "_requirements.txt"
+            req_sanitized = source_dir / "_requirements_sanitized.txt"
+
+            req_content = (
+                "./dist/qpth-0.0.18-py3-none-any.whl\n"
+                "qpth @ file:///home/user/dist/qpth-0.0.18-py3-none-any.whl\n"
+                "numpy==1.21.0\n"
+            )
+            req_txt.write_text(req_content, encoding="utf-8")
+            req_sanitized.write_text(req_content, encoding="utf-8")
+
+            output_zip = tmp_path / "wheelhouse.zip"
+            ret = module.cmd_pack_wheelhouse_zip(str(source_dir), str(output_zip), "store")
+            self.assertEqual(ret, 0)
+
+            # Check that the files on disk inside source_dir were sanitized
+            expected_sanitized_content = (
+                "qpth==0.0.18\n"
+                "qpth==0.0.18\n"
+                "numpy==1.21.0\n"
+            )
+            self.assertEqual(req_txt.read_text(encoding="utf-8"), expected_sanitized_content)
+            self.assertEqual(req_sanitized.read_text(encoding="utf-8"), expected_sanitized_content)
+
+            # Check zip file contents
+            with zipfile.ZipFile(output_zip, "r") as zf:
+                self.assertIn("_requirements.txt", zf.namelist())
+                self.assertIn("_requirements_sanitized.txt", zf.namelist())
+                self.assertEqual(
+                    zf.read("_requirements.txt").decode("utf-8"),
+                    expected_sanitized_content,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

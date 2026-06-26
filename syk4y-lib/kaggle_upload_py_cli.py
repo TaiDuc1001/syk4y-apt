@@ -165,9 +165,50 @@ def cmd_pyproject_extra_indexes(pyproject_path: str) -> int:
     return 0
 
 
+def _clean_requirement_line(line: str) -> str:
+    if not line.lower().endswith(".whl") and ".whl" not in line.lower():
+        return line
+
+    match = re.search(r"([^/\\@\s]+-([^-/\\]+)-[^-/\\]+-[^-/\\]+-[^-/\\]+\.whl)$", line, re.IGNORECASE)
+    if not match:
+        match = re.search(r"([^/\\@\s]+\.whl)$", line, re.IGNORECASE)
+        if not match:
+            return line
+        filename = match.group(1)
+        parts = filename.split("-")
+        if len(parts) >= 2:
+            pkg_name = parts[0].replace("_", "-")
+            pkg_version = parts[1]
+            return f"{pkg_name}=={pkg_version}"
+        return line
+
+    filename = match.group(1)
+    pkg_version = match.group(2)
+    pkg_name = filename.split("-", 1)[0].replace("_", "-")
+    return f"{pkg_name}=={pkg_version}"
+
+
 def cmd_pack_wheelhouse_zip(source_dir: str, output_zip: str, zip_mode: str) -> int:
     source = Path(source_dir)
     output = Path(output_zip)
+
+    for req_filename in ["_requirements.txt", "_requirements_sanitized.txt"]:
+        req_path = source / req_filename
+        if req_path.is_file():
+            try:
+                content = req_path.read_text(encoding="utf-8")
+                lines = content.splitlines()
+                new_lines = []
+                changed = False
+                for line in lines:
+                    cleaned = _clean_requirement_line(line)
+                    if cleaned != line:
+                        changed = True
+                    new_lines.append(cleaned)
+                if changed:
+                    req_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+            except Exception as e:
+                print(f"Warning: failed to sanitize {req_filename} in wheelhouse: {e}", file=sys.stderr)
 
     mode = (zip_mode or "store").strip().lower()
     compression = zipfile.ZIP_STORED if mode == "store" else zipfile.ZIP_DEFLATED
