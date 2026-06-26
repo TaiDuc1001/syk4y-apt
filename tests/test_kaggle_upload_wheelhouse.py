@@ -348,6 +348,76 @@ build_wheelhouse_if_needed ""
             commands = command_log.read_text(encoding="utf-8").splitlines()
             self.assertEqual(commands, ["uv-export-failed"])
 
+    def test_build_wheelhouse_delegates_to_docker_for_cross_arch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_docker = fake_bin / "docker"
+            docker_log = tmp_path / "docker.log"
+            
+            # Mock docker binary
+            fake_docker.write_text(
+                f"""#!/usr/bin/env bash
+echo "docker called with: $*" >> "{docker_log}"
+if [[ "$1" == "image" && "$2" == "inspect" ]]; then
+  exit 0 # Mock python:3.10-slim image is present locally
+fi
+exit 0
+""",
+                encoding="utf-8"
+            )
+            fake_docker.chmod(0o755)
+
+            # Determine opposite arch
+            import platform
+            host_machine = platform.machine()
+            if host_machine in ("arm64", "aarch64"):
+                target_arch = "x86_64"
+                expected_platform = "linux/amd64"
+            else:
+                target_arch = "aarch64"
+                expected_platform = "linux/arm64"
+
+            script = f"""
+set -euo pipefail
+PATH="$FAKE_BIN:$PATH"
+SCRIPT_DIR="{REPO_ROOT}"
+source "{WHEELHOUSE_SH}"
+
+REPO_ROOT="$REPO_DIR"
+PYTHON_BIN="python3"
+WHEELHOUSE_PYTHON="python3"
+WHEEL_JOBS=1
+WHEEL_FAIL_ON_MISSING=0
+WHEELHOUSE_ZIP_MODE="store"
+WHEELHOUSE_DATASET_DIR="$UPLOAD_ROOT/repo-wheelhouse"
+WHEELHOUSE_PATH="$WHEELHOUSE_DATASET_DIR/wheelhouse.zip"
+WHEELHOUSE_INPUT_HASH=""
+WHEEL_ARCH="{target_arch}"
+UPLOAD_ROOT="$UPLOAD_ROOT"
+
+build_wheelhouse_if_needed ""
+"""
+            repo_dir = tmp_path / "repo"
+            repo_dir.mkdir()
+            upload_root = tmp_path / "upload"
+            upload_root.mkdir()
+
+            proc = run_bash(
+                script,
+                env={
+                    "REPO_DIR": str(repo_dir),
+                    "UPLOAD_ROOT": str(upload_root),
+                    "FAKE_BIN": str(fake_bin),
+                },
+            )
+
+            self.assertEqual(proc.returncode, 0, f"script failed: {proc.stderr}")
+            docker_calls = docker_log.read_text(encoding="utf-8").splitlines()
+            self.assertTrue(any("image inspect python:3.10-slim" in call for call in docker_calls))
+            self.assertTrue(any(f"run --rm --platform {expected_platform}" in call for call in docker_calls))
+
 
 if __name__ == "__main__":
     unittest.main()

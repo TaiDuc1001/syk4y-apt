@@ -19,6 +19,7 @@ UPLOAD_ROOT="kaggle_upload"
 REPO_ROOT_OVERRIDE=""
 SKIP_GEN=0
 SELECTED_ARTIFACTS=()
+WHEEL_ARCH=""
 
 usage() {
   cat "$TEMPLATE_DIR/syk4y-gen-usage.txt"
@@ -42,7 +43,11 @@ build_wheelhouse_for_init() {
   mkdir -p "$(dirname "$WHEELHOUSE_ABS")"
 
   echo "    wheelhouse build root: $tmp_upload_root"
-  "$SCRIPT_DIR/syk4y-kaggle" --repo-root "$REPO_ROOT" upload --upload-dir "$tmp_upload_root" --build-wheel-only
+  local arch_args=()
+  if [[ -n "$WHEEL_ARCH" ]]; then
+    arch_args+=(--wheel-arch "$WHEEL_ARCH")
+  fi
+  "$SCRIPT_DIR/syk4y-kaggle" --repo-root "$REPO_ROOT" upload --upload-dir "$tmp_upload_root" --build-wheel-only "${arch_args[@]}"
 
   if [[ ! -f "$tmp_wheelhouse_path" ]]; then
     echo "Error: wheelhouse build finished but missing '$tmp_wheelhouse_path'." >&2
@@ -99,6 +104,14 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       UPLOAD_ROOT="$2"
+      shift 2
+      ;;
+    --wheel-arch)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      WHEEL_ARCH="$2"
       shift 2
       ;;
     -h|--help)

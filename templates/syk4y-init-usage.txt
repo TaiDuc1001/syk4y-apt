@@ -4,6 +4,7 @@ Usage:
 Options:
   -u, --upload-dir DIR   Upload root (default: kaggle_upload under repo root)
   -w, --wheelhouse FILE  Wheelhouse archive filename/path (default: wheelhouse.zip)
+  --wheel-arch ARCH      Target architecture for wheelhouse: native|x86_64|aarch64 (default: native)
   -h, --help             Show this help
 
 Artifacts:

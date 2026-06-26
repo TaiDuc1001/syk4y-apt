@@ -2,6 +2,72 @@
 
 build_wheelhouse_if_needed() {
   local prev_input_hash="$1"
+ 
+  # Check if we need to build via Docker for a different architecture
+  if [[ -n "${WHEEL_ARCH:-}" ]] && [[ "$WHEEL_ARCH" != "native" ]]; then
+    local host_arch target_arch
+    host_arch="$(uname -m)"
+    
+    normalize_arch() {
+      local a="${1,,}"
+      if [[ "$a" == "amd64" || "$a" == "x86_64" || "$a" == "i686" ]]; then
+        echo "x86_64"
+      elif [[ "$a" == "arm64" || "$a" == "aarch64" ]]; then
+        echo "aarch64"
+      else
+        echo "$a"
+      fi
+    }
+
+    local host_norm target_norm
+    host_norm="$(normalize_arch "$host_arch")"
+    target_norm="$(normalize_arch "$WHEEL_ARCH")"
+
+    if [[ "$host_norm" != "$target_norm" ]]; then
+      local docker_platform
+      if [[ "$target_norm" == "x86_64" ]]; then
+        docker_platform="linux/amd64"
+      elif [[ "$target_norm" == "aarch64" ]]; then
+        docker_platform="linux/arm64"
+      else
+        echo "Error: unsupported architecture '$WHEEL_ARCH'" >&2
+        exit 1
+      fi
+
+      echo "Cross-architecture build detected (host: $host_norm, target: $target_norm)."
+      echo "Delegating wheelhouse build to Docker container ($docker_platform)..."
+
+      if ! command -v docker >/dev/null 2>&1; then
+        echo "Error: docker command not found but is required for cross-architecture build." >&2
+        exit 1
+      fi
+
+      if ! docker image inspect python:3.10-slim >/dev/null 2>&1; then
+        echo "Error: Docker image python:3.10-slim is not available locally." >&2
+        echo "Please run: docker pull --platform $docker_platform python:3.10-slim" >&2
+        exit 1
+      fi
+
+      # Run the build inside docker.
+      # We mount REPO_ROOT to /workspace. We mount /tmp to /tmp to share temp files/outputs.
+      # We pass WHEEL_ARCH=native to prevent recursive docker calls inside the container.
+      docker run --rm \
+        --platform "$docker_platform" \
+        -v "$REPO_ROOT:/workspace" \
+        -v /tmp:/tmp \
+        -w /workspace \
+        -e PYTHON_BIN=python3 \
+        -e WHEELHOUSE_PYTHON=python3 \
+        -e WHEEL_ARCH=native \
+        -e WHEEL_JOBS="$WHEEL_JOBS" \
+        -e WHEELHOUSE_ZIP_MODE="$WHEELHOUSE_ZIP_MODE" \
+        -e WHEEL_FAIL_ON_MISSING="$WHEEL_FAIL_ON_MISSING" \
+        python:3.10-slim \
+        bash -c "pip install uv && ./syk4y-kaggle upload --repo-root /workspace --upload-dir $UPLOAD_ROOT --build-wheel-only"
+
+      return
+    fi
+  fi
 
   if ! [[ "$WHEEL_JOBS" =~ ^[0-9]+$ ]] || [[ "$WHEEL_JOBS" -lt 1 ]]; then
     echo "WHEEL_JOBS must be a positive integer. Got: $WHEEL_JOBS" >&2

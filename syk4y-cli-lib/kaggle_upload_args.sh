@@ -11,6 +11,7 @@ kaggle_upload_parse_args() {
   DIR_MODE_OVERRIDE=""
   FORCE_UPLOAD_OVERRIDE=0
   BUILD_WHEEL_ONLY=0
+  WHEEL_ARCH_OVERRIDE=""
   ARTIFACT_FILTERS=()
   ARTIFACT_FILTER_IDS=()
 
@@ -55,6 +56,14 @@ kaggle_upload_parse_args() {
       --build-wheel-only)
         BUILD_WHEEL_ONLY=1
         shift
+        ;;
+      --wheel-arch)
+        if [[ $# -lt 2 ]]; then
+          echo "Missing value for $1" >&2
+          exit 2
+        fi
+        WHEEL_ARCH_OVERRIDE="$2"
+        shift 2
         ;;
       -h|--help)
         kaggle_upload_usage
@@ -142,6 +151,10 @@ kaggle_upload_prepare_context() {
   WHEELHOUSE_INPUT_KEY="__wheelhouse_input__"
   WHEELHOUSE_INPUT_HASH=""
   FORCE_UPLOAD="${KAGGLE_FORCE_UPLOAD:-0}"
+  WHEEL_ARCH="${KAGGLE_WHEEL_ARCH:-native}"
+  if [[ -n "$WHEEL_ARCH_OVERRIDE" ]]; then
+    WHEEL_ARCH="$WHEEL_ARCH_OVERRIDE"
+  fi
 
   if [[ -n "$UPLOAD_ROOT_OVERRIDE" ]]; then
     UPLOAD_ROOT="$UPLOAD_ROOT_OVERRIDE"

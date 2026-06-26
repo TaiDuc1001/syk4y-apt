@@ -13,4 +13,5 @@ Options:
   -o, --out FILE         Output snapshot script path (default: <upload-dir>/gen-full.py)
   -w, --wheelhouse FILE  Wheelhouse archive name/path (default: wheelhouse.zip in upload dataset folder)
   -u, --upload-dir DIR   Kaggle upload root directory (default: kaggle_upload)
+  --wheel-arch ARCH      Target architecture for wheelhouse: native|x86_64|aarch64 (default: native)
   -h, --help             Show this help
