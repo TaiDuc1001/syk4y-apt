@@ -48,6 +48,32 @@ build_wheelhouse_if_needed() {
         exit 1
       fi
 
+      # Natively export requirements on the host to avoid QEMU uv segfaults
+      local host_req_out uv_lock_path
+      host_req_out="$(mktemp "/tmp/wheelhouse-host-req.XXXXXX.txt")"
+      uv_lock_path="$REPO_ROOT/uv.lock"
+      
+      if [[ -f "$uv_lock_path" ]]; then
+        echo "Exporting requirements on host from uv.lock..."
+        if ! uv export \
+          --project "$REPO_ROOT" \
+          --locked \
+          --format requirements.txt \
+          --no-hashes \
+          --no-header \
+          --no-annotate \
+          --no-editable \
+          --no-emit-project \
+          --output-file "$host_req_out"; then
+          echo "Error: failed to export '$uv_lock_path' on host." >&2
+          rm -f "$host_req_out"
+          exit 1
+        fi
+      else
+        echo "No uv.lock found; freezing packages on host..."
+        PIP_DISABLE_PIP_VERSION_CHECK=1 "$WHEELHOUSE_PYTHON" -m pip freeze --all --exclude-editable > "$host_req_out"
+      fi
+
       # Run the build inside docker.
       # We mount REPO_ROOT to /workspace. We mount /tmp to /tmp to share temp files/outputs.
       # We pass WHEEL_ARCH=native to prevent recursive docker calls inside the container.
@@ -67,16 +93,18 @@ build_wheelhouse_if_needed() {
         -e PYTHON_BIN=python3 \
         -e WHEELHOUSE_PYTHON=python3 \
         -e WHEEL_ARCH=native \
+        -e EXPORTED_REQUIREMENTS_PATH="$host_req_out" \
         -e WHEEL_JOBS="$WHEEL_JOBS" \
         -e WHEELHOUSE_ZIP_MODE="$WHEELHOUSE_ZIP_MODE" \
         -e WHEEL_FAIL_ON_MISSING="$WHEEL_FAIL_ON_MISSING" \
         python:3.10-slim \
-        bash -c "pip install uv && /syk4y-toolkit/syk4y-kaggle upload --repo-root /workspace --upload-dir $container_upload_root --build-wheel-only" 2>"$docker_err"; then
+        /syk4y-toolkit/syk4y-kaggle upload --repo-root /workspace --upload-dir "$container_upload_root" --build-wheel-only 2>"$docker_err"; then
         
         local err_msg
         err_msg="$(cat "$docker_err")"
         echo "$err_msg" >&2
         rm -f "$docker_err"
+        rm -f "$host_req_out"
         
         if [[ "$err_msg" == *"exec format error"* ]]; then
           local install_arch="$target_norm"
@@ -95,6 +123,7 @@ build_wheelhouse_if_needed() {
         exit 1
       fi
       rm -f "$docker_err"
+      rm -f "$host_req_out"
 
       return
     fi
@@ -125,7 +154,11 @@ build_wheelhouse_if_needed() {
   }
   trap cleanup_wheel_tmp RETURN
 
-  if [[ -f "$uv_lock_path" ]]; then
+  if [[ -n "${EXPORTED_REQUIREMENTS_PATH:-}" ]] && [[ -f "$EXPORTED_REQUIREMENTS_PATH" ]]; then
+    requirements_source="pre-exported requirements"
+    echo "Using pre-exported requirements from host: $EXPORTED_REQUIREMENTS_PATH"
+    cp -f "$EXPORTED_REQUIREMENTS_PATH" "$req_out"
+  elif [[ -f "$uv_lock_path" ]]; then
     if ! command -v uv >/dev/null 2>&1; then
       echo "Error: '$uv_lock_path' exists but uv is not available." >&2
       echo "Install uv or remove the lockfile only if this is not a uv-managed project." >&2
