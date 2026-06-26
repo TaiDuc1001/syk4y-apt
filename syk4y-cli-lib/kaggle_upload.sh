@@ -2,6 +2,8 @@
 # This file is intentionally thin and orchestrates purpose-specific modules.
 
 # shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/gitignore_utils.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_upload_args.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_upload_env.sh"

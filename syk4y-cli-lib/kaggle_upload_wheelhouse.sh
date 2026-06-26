@@ -53,9 +53,16 @@ build_wheelhouse_if_needed() {
       fi
 
       # 1. Natively export requirements on the host to avoid QEMU uv segfaults
-      local host_req_out uv_lock_path temp_dir
-      temp_dir="$REPO_ROOT/.syk4y-temp"
+      local host_req_out uv_lock_path temp_dir r_root
+      r_root="${REPO_ROOT:-}"
+      if [[ -z "$r_root" ]]; then
+        r_root="$(pwd)"
+      fi
+      temp_dir="$r_root/.syk4y-temp"
       mkdir -p "$temp_dir"
+      if declare -f syk4y_ensure_temp_dir_gitignore >/dev/null; then
+        syk4y_ensure_temp_dir_gitignore "$r_root"
+      fi
       host_req_out="$temp_dir/wheelhouse-host-req.txt"
       uv_lock_path="$REPO_ROOT/uv.lock"
       

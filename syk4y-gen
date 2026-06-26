@@ -35,7 +35,7 @@ require_cmd() {
 
 build_wheelhouse_for_init() {
   local tmp_root tmp_upload_root tmp_wheelhouse_path
-  tmp_root="${SYK4Y_WHEELHOUSE_TMP_ROOT:-/tmp/syk4y-wheelhouse-cache}"
+  tmp_root="${SYK4Y_WHEELHOUSE_TMP_ROOT:-$REPO_ROOT/.syk4y-temp/wheelhouse-cache}"
   tmp_upload_root="$tmp_root/$REPO_SLUG"
   tmp_wheelhouse_path="$tmp_upload_root/${REPO_SLUG}-wheelhouse/wheelhouse.zip"
 
@@ -192,6 +192,7 @@ fi
 
 cd "$REPO_ROOT"
 syk4y_ensure_kaggle_upload_gitignore "$REPO_ROOT"
+syk4y_ensure_temp_dir_gitignore "$REPO_ROOT"
 
 REPO_NAME="$(basename "$REPO_ROOT")"
 REPO_SLUG="$(syk4y_slugify "$REPO_NAME")"

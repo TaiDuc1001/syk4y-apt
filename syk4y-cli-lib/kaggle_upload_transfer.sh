@@ -82,7 +82,18 @@ upload_single_artifact() {
   item_name="$(artifact_item_name "$artifact_id")"
   source_path="$(artifact_source_path "$artifact_id")"
   metadata_file="$(artifact_metadata_file "$artifact_id")"
-  stage_dir="$(mktemp -d "/tmp/kaggle-upload-stage.${artifact_id}.XXXXXX")"
+  
+  local temp_dir stage_dir r_root
+  r_root="${REPO_ROOT:-}"
+  if [[ -z "$r_root" ]]; then
+    r_root="$(pwd)"
+  fi
+  temp_dir="$r_root/.syk4y-temp"
+  mkdir -p "$temp_dir"
+  if declare -f syk4y_ensure_temp_dir_gitignore >/dev/null; then
+    syk4y_ensure_temp_dir_gitignore "$r_root"
+  fi
+  stage_dir="$(mktemp -d "$temp_dir/kaggle-upload-stage.${artifact_id}.XXXXXX")"
   upload_status=0
 
   cp "$metadata_file" "$stage_dir/dataset-metadata.json" || upload_status=$?
@@ -171,6 +182,8 @@ kaggle_upload_run_flow() {
       echo "Error: wheelhouse build completed but '$WHEELHOUSE_PATH' is missing." >&2
       exit 1
     fi
+    write_state_value "$WHEELHOUSE_INPUT_KEY" "${WHEELHOUSE_INPUT_HASH:-}"
+    write_state_file
     echo "Build-wheel-only mode complete: $WHEELHOUSE_PATH"
     return
   fi
