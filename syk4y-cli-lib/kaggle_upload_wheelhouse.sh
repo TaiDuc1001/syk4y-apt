@@ -73,11 +73,15 @@ build_wheelhouse_if_needed() {
         rm -f "$docker_err"
         
         if [[ "$err_msg" == *"exec format error"* ]]; then
+          local install_arch="$target_norm"
+          if [[ "$install_arch" == "x86_64" ]]; then install_arch="amd64"; fi
+          if [[ "$install_arch" == "aarch64" ]]; then install_arch="arm64"; fi
+
           echo "" >&2
           echo "======================================================================" >&2
           echo "Error: QEMU user-space emulation for $target_norm is not configured on your host." >&2
           echo "To run $docker_platform containers on your $host_norm machine, please register QEMU:" >&2
-          echo "  docker run --rm --privileged multiarch/qemu-user-static --reset -p yes" >&2
+          echo "  docker run --privileged --rm tonistiigi/binfmt --install $install_arch" >&2
           echo "Or install native package (Debian/Ubuntu):" >&2
           echo "  sudo apt-get update && sudo apt-get install -y qemu-user-static binfmt-support" >&2
           echo "======================================================================" >&2
