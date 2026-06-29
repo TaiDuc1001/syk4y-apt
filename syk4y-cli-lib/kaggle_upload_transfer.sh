@@ -182,7 +182,6 @@ kaggle_upload_run_flow() {
       echo "Error: wheelhouse build completed but '$WHEELHOUSE_PATH' is missing." >&2
       exit 1
     fi
-    write_state_value "$WHEELHOUSE_INPUT_KEY" "${WHEELHOUSE_INPUT_HASH:-}"
     write_state_file
     echo "Build-wheel-only mode complete: $WHEELHOUSE_PATH"
     return

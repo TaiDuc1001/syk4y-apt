@@ -286,6 +286,60 @@ if [[ -f "$STATE_LOG" ]]; then cat "$STATE_LOG"; fi
             self.assertIn('"id": "ducphan1001/repo-datasets"', proc.stdout)
             self.assertNotIn("write-state", proc.stdout)
 
+    def test_run_flow_build_wheel_only_writes_state_correctly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            state_log = tmp_path / "state.log"
+            wheelhouse_path = tmp_path / "wheelhouse.zip"
+            wheelhouse_path.write_text("fake-zip\n", encoding="utf-8")
+
+            script = f"""
+set -euo pipefail
+source "{TRANSFER_SH}"
+SCRIPT_DIR="{REPO_ROOT}"
+REPO_ROOT="$REPO_DIR"
+UPLOAD_ROOT="$UPLOAD_ROOT_ENV"
+PYTHON_BIN="python3"
+BUILD_WHEEL_ONLY=1
+STATE_FILE="$STATE_FILE_ENV"
+WHEELHOUSE_INPUT_KEY="__wheelhouse_input__"
+WHEELHOUSE_INPUT_HASH="test-wheelhouse-hash"
+WHEELHOUSE_PATH="$WHEELHOUSE_PATH_ENV"
+declare -A CURRENT_FP
+declare -A CURRENT_META_FP
+syk4y_resolve_python_bin_or_die() {{ printf '%s\\n' "python3"; }}
+resolve_wheelhouse_python() {{ printf '%s\\n' "python3"; }}
+ensure_pip() {{ :; }}
+build_wheelhouse_if_needed() {{ :; }}
+read_state_value() {{ printf '\\n'; }}
+write_state_file() {{ printf 'write-state\\n' >> "$STATE_LOG"; }}
+kaggle_upload_run_flow
+status="$?"
+echo "STATUS=$status"
+"""
+            proc = subprocess.run(
+                ["bash", "-lc", script],
+                cwd=REPO_ROOT,
+                env={
+                    **os.environ,
+                    "REPO_DIR": str(repo),
+                    "UPLOAD_ROOT_ENV": str(repo / "kaggle_upload"),
+                    "STATE_FILE_ENV": str(tmp_path / ".upload-state.json"),
+                    "WHEELHOUSE_PATH_ENV": str(wheelhouse_path),
+                    "STATE_LOG": str(state_log),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("STATUS=0", proc.stdout)
+            self.assertTrue(state_log.exists())
+            self.assertIn("write-state", state_log.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
