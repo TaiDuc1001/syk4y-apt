@@ -16,64 +16,63 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 
-class ParallelZipFile(zipfile.ZipFile):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._pre_compressed_map = {}
-
-    def set_pre_compressed(self, filename, compressed_data, uncompressed_size, crc):
-        self._pre_compressed_map[filename] = (compressed_data, uncompressed_size, crc)
-
-    def _open_to_write(self, zinfo, force_zip64=False):
-        write_file = super()._open_to_write(zinfo, force_zip64=force_zip64)
-        filename = zinfo.filename
-        if filename in self._pre_compressed_map:
-            comp_data, unc_size, crc = self._pre_compressed_map[filename]
-            
-            def custom_write(data):
-                if write_file.closed:
-                    raise ValueError("I/O operation on closed file.")
-                if write_file._file_size == 0:
-                    write_file._file_size = unc_size
-                    write_file._crc = crc
-                    write_file._compress_size = len(comp_data)
-                    write_file._fileobj.write(comp_data)
-                return len(data)
-                
-            def custom_close():
-                if write_file.closed:
-                    return
-                try:
-                    super(zipfile._ZipWriteFile, write_file).close()
-                    write_file._zinfo.compress_size = write_file._compress_size
-                    write_file._zinfo.CRC = write_file._crc
-                    write_file._zinfo.file_size = write_file._file_size
-                    
-                    if write_file._zinfo.flag_bits & 0x08:
-                        import struct
-                        fmt = "<LLQQ" if write_file._zip64 else "<LLLL"
-                        write_file._fileobj.write(struct.pack(fmt, zipfile._DD_SIGNATURE, write_file._zinfo.CRC,
-                            write_file._zinfo.compress_size, write_file._zinfo.file_size))
-                        write_file._zipfile.start_dir = write_file._fileobj.tell()
-                    else:
-                        write_file._zipfile.start_dir = write_file._fileobj.tell()
-                        write_file._fileobj.seek(write_file._zinfo.header_offset)
-                        write_file._fileobj.write(write_file._zinfo.FileHeader(write_file._zip64))
-                        write_file._fileobj.seek(write_file._zipfile.start_dir)
-
-                    write_file._zipfile.filelist.append(write_file._zinfo)
-                    write_file._zipfile.NameToInfo[write_file._zinfo.filename] = write_file._zinfo
-                finally:
-                    write_file._zipfile._writing = False
-                    
-            write_file.write = custom_write
-            write_file.close = custom_close
-            write_file._compressor = None
-            
-        return write_file
-
-
 def _parallel_pack_zip(output_zip: Path, files_to_compress, compression):
+    class ParallelZipFile(zipfile.ZipFile):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._pre_compressed_map = {}
+
+        def set_pre_compressed(self, filename, compressed_data, uncompressed_size, crc):
+            self._pre_compressed_map[filename] = (compressed_data, uncompressed_size, crc)
+
+        def _open_to_write(self, zinfo, force_zip64=False):
+            write_file = super()._open_to_write(zinfo, force_zip64=force_zip64)
+            filename = zinfo.filename
+            if filename in self._pre_compressed_map:
+                comp_data, unc_size, crc = self._pre_compressed_map[filename]
+                
+                def custom_write(data):
+                    if write_file.closed:
+                        raise ValueError("I/O operation on closed file.")
+                    if write_file._file_size == 0:
+                        write_file._file_size = unc_size
+                        write_file._crc = crc
+                        write_file._compress_size = len(comp_data)
+                        write_file._fileobj.write(comp_data)
+                    return len(data)
+                    
+                def custom_close():
+                    if write_file.closed:
+                        return
+                    try:
+                        super(zipfile._ZipWriteFile, write_file).close()
+                        write_file._zinfo.compress_size = write_file._compress_size
+                        write_file._zinfo.CRC = write_file._crc
+                        write_file._zinfo.file_size = write_file._file_size
+                        
+                        if write_file._zinfo.flag_bits & 0x08:
+                            import struct
+                            fmt = "<LLQQ" if write_file._zip64 else "<LLLL"
+                            write_file._fileobj.write(struct.pack(fmt, zipfile._DD_SIGNATURE, write_file._zinfo.CRC,
+                                write_file._zinfo.compress_size, write_file._zinfo.file_size))
+                            write_file._zipfile.start_dir = write_file._fileobj.tell()
+                        else:
+                            write_file._zipfile.start_dir = write_file._fileobj.tell()
+                            write_file._fileobj.seek(write_file._zinfo.header_offset)
+                            write_file._fileobj.write(write_file._zinfo.FileHeader(write_file._zip64))
+                            write_file._fileobj.seek(write_file._zipfile.start_dir)
+
+                        write_file._zipfile.filelist.append(write_file._zinfo)
+                        write_file._zipfile.NameToInfo[write_file._zinfo.filename] = write_file._zinfo
+                    finally:
+                        write_file._zipfile._writing = False
+                        
+                write_file.write = custom_write
+                write_file.close = custom_close
+                write_file._compressor = None
+                
+            return write_file
+
     MAX_PARALLEL_FILE_SIZE = 16 * 1024 * 1024  # 16MB
     
     parallel_jobs = []
