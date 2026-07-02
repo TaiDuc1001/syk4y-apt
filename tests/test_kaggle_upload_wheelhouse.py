@@ -88,6 +88,7 @@ exit 2
 set -euo pipefail
 SCRIPT_DIR="{REPO_ROOT}"
 source "{WHEELHOUSE_SH}"
+ensure_pip() {{ :; }}
 
 REPO_ROOT="$REPO_DIR"
 PYTHON_BIN="$FAKE_PY"
@@ -228,6 +229,7 @@ set -euo pipefail
 PATH="$FAKE_BIN:$PATH"
 SCRIPT_DIR="{REPO_ROOT}"
 source "{WHEELHOUSE_SH}"
+ensure_pip() {{ :; }}
 
 REPO_ROOT="$REPO_DIR"
 PYTHON_BIN="python3"
@@ -318,6 +320,7 @@ set -euo pipefail
 PATH="$FAKE_BIN:$PATH"
 SCRIPT_DIR="{REPO_ROOT}"
 source "{WHEELHOUSE_SH}"
+ensure_pip() {{ :; }}
 
 REPO_ROOT="$REPO_DIR"
 PYTHON_BIN="$FAKE_PY"
@@ -419,6 +422,7 @@ set -euo pipefail
 PATH="$FAKE_BIN:$PATH"
 SCRIPT_DIR="{REPO_ROOT}"
 source "{WHEELHOUSE_SH}"
+ensure_pip() {{ :; }}
 
 REPO_ROOT="$REPO_DIR"
 PYTHON_BIN="python3"

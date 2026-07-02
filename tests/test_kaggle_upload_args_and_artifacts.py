@@ -161,7 +161,7 @@ artifact_item_name() {{ printf '%s\\n' "models"; }}
 fingerprint_path() {{ printf '%s\\n' "myfingerprint123"; }}
 syk4y_ensure_temp_dir_gitignore() {{ :; }}
 
-kaggle_zip --repo-root "$REPO_DIR"
+kaggle_zip --repo-root "$REPO_DIR" --dir-mode store
 """
             proc = run_bash(
                 script,
@@ -170,7 +170,7 @@ kaggle_zip --repo-root "$REPO_DIR"
                     "FAKE_PY": str(fake_python),
                     "FAKE_KAGGLE": str(fake_kaggle),
                     "SOURCE_DIR": str(source_dir),
-                    "METADATA_FILE": str(dataset_dir / "dataset-metadata.json"),
+                    "METADATA_FILE": str(metadata_dir / "dataset-metadata.json"),
                     "UPLOAD_ROOT_ENV": str(upload_root),
                     "TMP_ROOT": str(tmp_path),
                     "REPO_DIR": str(tmp_path),

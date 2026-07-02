@@ -1,7 +1,7 @@
 # Runtime and prerequisite helpers for `syk4y kaggle upload`.
 
 # shellcheck source=/dev/null
-source "$SCRIPT_DIR/syk4y-cli-lib/python_env.sh"
+source "${SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}/syk4y-cli-lib/python_env.sh"
 
 resolve_wheelhouse_python() {
   local wheel_py="${WHEELHOUSE_PYTHON:-}"

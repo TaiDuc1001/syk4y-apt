@@ -1,7 +1,7 @@
 # Wheelhouse build pipeline for `syk4y kaggle upload`.
 
 # shellcheck source=/dev/null
-source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_upload_env.sh"
+source "${SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}/syk4y-cli-lib/kaggle_upload_env.sh"
 
 build_wheelhouse_if_needed() {
   local prev_input_hash="$1"
