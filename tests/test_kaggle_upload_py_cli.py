@@ -199,6 +199,106 @@ class KaggleUploadPyCliTests(unittest.TestCase):
                     expected_sanitized_content,
                 )
 
+    def test_pack_artifact_dir_zip_incremental_append(self):
+        module = load_py_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source"
+            source.mkdir()
+            (source / "file1.txt").write_text("hello1", encoding="utf-8")
+
+            output_zip = tmp_path / "artifact.zip"
+            metadata_file = tmp_path / "artifact.zip.metadata.json"
+
+            # 1. First run creates the zip
+            ret = module.cmd_pack_artifact_dir_zip(str(source), str(output_zip), "store")
+            self.assertEqual(ret, 0)
+            self.assertTrue(output_zip.exists())
+            self.assertTrue(metadata_file.exists())
+            
+            with zipfile.ZipFile(output_zip, "r") as zf:
+                self.assertEqual(zf.read("file1.txt"), b"hello1")
+
+            # Load initial fingerprint
+            import json
+            meta_data = json.loads(metadata_file.read_text(encoding="utf-8"))
+            initial_fp = meta_data["fingerprint"]
+
+            # 2. Add a new file and modify the old one
+            import time
+            time.sleep(0.01) # ensure mtime changes
+            (source / "file1.txt").write_text("hello1_mod", encoding="utf-8")
+            (source / "file2.txt").write_text("hello2", encoding="utf-8")
+
+            ret = module.cmd_pack_artifact_dir_zip(str(source), str(output_zip), "store")
+            self.assertEqual(ret, 0)
+
+            # Check that fingerprint changed
+            meta_data2 = json.loads(metadata_file.read_text(encoding="utf-8"))
+            self.assertNotEqual(initial_fp, meta_data2["fingerprint"])
+
+            # Verify both files are in the zip and modified version is read
+            with zipfile.ZipFile(output_zip, "r") as zf:
+                self.assertEqual(zf.read("file1.txt"), b"hello1_mod")
+                self.assertEqual(zf.read("file2.txt"), b"hello2")
+
+    def test_pack_artifact_dir_zip_handles_deletion_by_omitting(self):
+        module = load_py_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source"
+            source.mkdir()
+            (source / "file1.txt").write_text("hello1", encoding="utf-8")
+            (source / "file2.txt").write_text("hello2", encoding="utf-8")
+
+            output_zip = tmp_path / "artifact.zip"
+            metadata_file = tmp_path / "artifact.zip.metadata.json"
+
+            # 1. First run creates the zip
+            ret = module.cmd_pack_artifact_dir_zip(str(source), str(output_zip), "store")
+            self.assertEqual(ret, 0)
+
+            # 2. Delete file2.txt from source
+            (source / "file2.txt").unlink()
+
+            ret = module.cmd_pack_artifact_dir_zip(str(source), str(output_zip), "store")
+            self.assertEqual(ret, 0)
+
+            # 3. Check metadata: file2.txt is omitted
+            import json
+            meta_data = json.loads(metadata_file.read_text(encoding="utf-8"))
+            self.assertIn("file1.txt", meta_data["files"])
+            self.assertNotIn("file2.txt", meta_data["files"])
+
+    def test_pack_artifact_dir_zip_force_rebuild(self):
+        module = load_py_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source"
+            source.mkdir()
+            (source / "file1.txt").write_text("hello1", encoding="utf-8")
+
+            output_zip = tmp_path / "artifact.zip"
+            metadata_file = tmp_path / "artifact.zip.metadata.json"
+
+            # 1. First run creates the zip
+            ret = module.cmd_pack_artifact_dir_zip(str(source), str(output_zip), "store")
+            self.assertEqual(ret, 0)
+
+            # 2. Delete file1.txt and add file2.txt
+            (source / "file1.txt").unlink()
+            (source / "file2.txt").write_text("hello2", encoding="utf-8")
+
+            # 3. Force rebuild
+            ret = module.cmd_pack_artifact_dir_zip(str(source), str(output_zip), "store", force=True)
+            self.assertEqual(ret, 0)
+
+            # 4. Verify file1.txt is GONE from the zip archive completely
+            with zipfile.ZipFile(output_zip, "r") as zf:
+                self.assertNotIn("file1.txt", zf.namelist())
+                self.assertIn("file2.txt", zf.namelist())
+                self.assertEqual(zf.read("file2.txt"), b"hello2")
+
 
 if __name__ == "__main__":
     unittest.main()

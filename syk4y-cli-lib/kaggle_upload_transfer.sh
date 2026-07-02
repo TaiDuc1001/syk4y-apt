@@ -103,19 +103,26 @@ upload_single_artifact() {
 
   local cache_dir="$temp_dir/kaggle-zip-cache"
   mkdir -p "$cache_dir"
-  local cache_file=""
-  if [[ -n "$fingerprint" ]]; then
-    cache_file="$cache_dir/$fingerprint.zip"
-  fi
+  local cache_file="$cache_dir/${artifact_id}.zip"
+  local cache_meta="$cache_dir/${artifact_id}.zip.metadata.json"
 
   cp "$metadata_file" "$stage_dir/dataset-metadata.json" || upload_status=$?
   if [[ "$upload_status" -eq 0 ]]; then
     if [[ -d "$source_path" && "$DIR_MODE" == "zip" ]]; then
-      if [[ -n "$cache_file" && -f "$cache_file" ]]; then
+      local cache_ok=0
+      if [[ -f "$cache_file" && -f "$cache_meta" ]]; then
+        local cached_fp
+        cached_fp="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" read-metadata-fingerprint "$cache_meta")"
+        if [[ "$cached_fp" == "$fingerprint" ]]; then
+          cache_ok=1
+        fi
+      fi
+
+      if [[ "$cache_ok" -eq 1 ]]; then
         echo "Using cached zip for '$artifact_id' (fingerprint: $fingerprint)"
         cp "$cache_file" "$stage_dir/$item_name.zip" || upload_status=$?
       else
-        echo "Error: ZIP file for artifact '$artifact_id' not found in cache (expected fingerprint: $fingerprint)." >&2
+        echo "Error: ZIP file for artifact '$artifact_id' not found or stale in cache (expected fingerprint: $fingerprint)." >&2
         echo "Please run: syk4y kaggle zip" >&2
         upload_status=1
       fi

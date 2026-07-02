@@ -16,7 +16,10 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 
-def _parallel_pack_zip(output_zip: Path, files_to_compress, compression):
+def _parallel_pack_zip(output_zip: Path, files_to_compress, compression, mode="w"):
+    import warnings
+    warnings.filterwarnings("ignore", category=UserWarning, message="Duplicate name:")
+
     class ParallelZipFile(zipfile.ZipFile):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -144,7 +147,7 @@ def _parallel_pack_zip(output_zip: Path, files_to_compress, compression):
     
     print_progress(0, total_files, prefix="Writing zip", suffix="")
 
-    with ParallelZipFile(output_zip, mode="w", compression=compression) as zf:
+    with ParallelZipFile(output_zip, mode=mode, compression=compression) as zf:
         for r, val in pre_compressed_map.items():
             zf.set_pre_compressed(r, val[0], val[1], val[2])
             
@@ -176,6 +179,26 @@ def _parallel_pack_zip(output_zip: Path, files_to_compress, compression):
         sys.stderr.flush()
 
 
+def _compute_dir_fingerprint(p: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    h.update(b"D\0")
+    for q, rel, typ in _walk_path_following_symlink_dirs(p):
+        st = q.stat() if typ in {"D", "F"} else q.lstat()
+        h.update(typ.encode())
+        h.update(b"\0")
+        h.update(rel.encode())
+        h.update(b"\0")
+        h.update(str(st.st_size).encode())
+        h.update(b"\0")
+        h.update(str(st.st_mtime_ns).encode())
+        h.update(b"\0")
+        if q.is_symlink():
+            h.update(os.readlink(q).encode())
+            h.update(b"\0")
+    return h.hexdigest()
+
+
 def cmd_fingerprint_path(target: str) -> int:
     import hashlib
 
@@ -184,38 +207,27 @@ def cmd_fingerprint_path(target: str) -> int:
         print("")
         return 0
 
-    h = hashlib.sha256()
     if p.is_file():
+        h = hashlib.sha256()
         st = p.stat()
         h.update(b"F\0")
         h.update(str(st.st_size).encode())
         h.update(b"\0")
         h.update(str(st.st_mtime_ns).encode())
         h.update(b"\0")
+        print(h.hexdigest())
     elif p.is_dir():
-        h.update(b"D\0")
-        for q, rel, typ in _walk_path_following_symlink_dirs(p):
-            st = q.stat() if typ in {"D", "F"} else q.lstat()
-            h.update(typ.encode())
-            h.update(b"\0")
-            h.update(rel.encode())
-            h.update(b"\0")
-            h.update(str(st.st_size).encode())
-            h.update(b"\0")
-            h.update(str(st.st_mtime_ns).encode())
-            h.update(b"\0")
-            if q.is_symlink():
-                h.update(os.readlink(q).encode())
-                h.update(b"\0")
+        print(_compute_dir_fingerprint(p))
     else:
+        h = hashlib.sha256()
         st = p.stat()
         h.update(b"O\0")
         h.update(str(st.st_size).encode())
         h.update(b"\0")
         h.update(str(st.st_mtime_ns).encode())
         h.update(b"\0")
+        print(h.hexdigest())
 
-    print(h.hexdigest())
     return 0
 
 
@@ -392,26 +404,97 @@ def cmd_pack_wheelhouse_zip(source_dir: str, output_zip: str, zip_mode: str) -> 
     return 0
 
 
-def cmd_pack_artifact_dir_zip(source_dir: str, output_zip: str, zip_mode: str) -> int:
+def cmd_pack_artifact_dir_zip(source_dir: str, output_zip: str, zip_mode: str, force: bool = False) -> int:
     source = Path(source_dir)
     output = Path(output_zip)
+    metadata_file = output.with_name(output.name + ".metadata.json")
 
     mode = (zip_mode or "store").strip().lower()
     compression = zipfile.ZIP_STORED if mode == "store" else zipfile.ZIP_DEFLATED
 
-    files_to_compress = []
+    # 1. Walk source directory to collect current files state
+    current_files = {}  # rel_path -> (mtime_ns, size, path, ext_attr, typ)
     for path, rel, typ in _walk_path_following_symlink_dirs(source):
         try:
-            st = path.stat()
+            st = path.stat() if typ in {"D", "F"} else path.lstat()
             ext_attr = (st.st_mode & 0xFFFF) << 16
+            mtime_ns = st.st_mtime_ns
+            size = st.st_size
         except OSError:
             continue
         if typ == "D":
-            files_to_compress.append((None, rel.rstrip("/") + "/", ext_attr))
+            current_files[rel.rstrip("/") + "/"] = (mtime_ns, 0, None, ext_attr, "D")
         elif typ == "F":
+            current_files[rel] = (mtime_ns, size, path, ext_attr, "F")
+        else:
+            current_files[rel] = (mtime_ns, size, path, ext_attr, typ)
+
+    # 2. Check if we can perform an incremental update
+    incremental = False
+    cached_metadata = None
+    if output.exists() and metadata_file.exists() and not force:
+        try:
+            cached_metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+            if isinstance(cached_metadata, dict) and "files" in cached_metadata:
+                incremental = True
+        except Exception:
+            pass
+
+    # 3. Compute files to add/modify (omitting deleted files silently)
+    files_to_compress = []
+    
+    if incremental:
+        cached_files = cached_metadata.get("files", {})
+        # Find new or modified files
+        for rel, (mtime_ns, size, path, ext_attr, typ) in current_files.items():
+            if rel not in cached_files:
+                # New file
+                files_to_compress.append((path, rel, ext_attr))
+            else:
+                cached_mtime, cached_size = cached_files[rel]
+                if mtime_ns != cached_mtime or size != cached_size:
+                    # Modified file
+                    files_to_compress.append((path, rel, ext_attr))
+    else:
+        # Full rebuild
+        if output.exists():
+            try:
+                output.unlink()
+            except OSError:
+                pass
+        for rel, (mtime_ns, size, path, ext_attr, typ) in current_files.items():
             files_to_compress.append((path, rel, ext_attr))
 
-    _parallel_pack_zip(output, files_to_compress, compression)
+    # 4. Perform zipping if needed
+    if files_to_compress:
+        write_mode = "a" if incremental else "w"
+        if write_mode == "a":
+            print(f"Incremental update: appending {len(files_to_compress)} new/modified files...", file=sys.stderr)
+        _parallel_pack_zip(output, files_to_compress, compression, mode=write_mode)
+    else:
+        print("Zip archive is already up-to-date.", file=sys.stderr)
+
+    # 5. Save new metadata file with current fingerprint
+    fingerprint = _compute_dir_fingerprint(source)
+    
+    metadata = {
+        "fingerprint": fingerprint,
+        "files": {rel: [current_files[rel][0], current_files[rel][1]] for rel in current_files}
+    }
+    
+    # Ensure parent directory of metadata file exists
+    metadata_file.parent.mkdir(parents=True, exist_ok=True)
+    metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return 0
+
+
+def cmd_read_metadata_fingerprint(metadata_file: str) -> int:
+    meta = Path(metadata_file)
+    try:
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        print(data.get("fingerprint", "").strip())
+    except Exception:
+        print("")
     return 0
 
 
@@ -637,6 +720,10 @@ def main() -> int:
     p_paz.add_argument("source_dir")
     p_paz.add_argument("output_zip")
     p_paz.add_argument("zip_mode")
+    p_paz.add_argument("--force", action="store_true")
+
+    p_rmf = sub.add_parser("read-metadata-fingerprint")
+    p_rmf.add_argument("metadata_file")
 
     p_edr = sub.add_parser("extract-dataset-ref")
     p_edr.add_argument("metadata_file")
@@ -674,7 +761,9 @@ def main() -> int:
     if args.command == "pack-wheelhouse-zip":
         return cmd_pack_wheelhouse_zip(args.source_dir, args.output_zip, args.zip_mode)
     if args.command == "pack-artifact-dir-zip":
-        return cmd_pack_artifact_dir_zip(args.source_dir, args.output_zip, args.zip_mode)
+        return cmd_pack_artifact_dir_zip(args.source_dir, args.output_zip, args.zip_mode, force=args.force)
+    if args.command == "read-metadata-fingerprint":
+        return cmd_read_metadata_fingerprint(args.metadata_file)
     if args.command == "extract-dataset-ref":
         return cmd_extract_dataset_ref(args.metadata_file)
     if args.command == "rewrite-dataset-owner":

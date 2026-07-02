@@ -389,11 +389,19 @@ echo "STATUS=$status"
             # Pre-create cached zip file
             cache_dir = tmp_path / ".syk4y-temp" / "kaggle-zip-cache"
             cache_dir.mkdir(parents=True)
-            cached_zip = cache_dir / "myfingerprint123.zip"
+            cached_zip = cache_dir / "datasets.zip"
             # Create a simple valid zip
             import zipfile
             with zipfile.ZipFile(cached_zip, "w") as zf:
                 zf.writestr("file.txt", "cached_data\n")
+
+            # Create metadata JSON file
+            import json
+            cached_meta = cache_dir / "datasets.zip.metadata.json"
+            cached_meta.write_text(
+                json.dumps({"fingerprint": "myfingerprint123", "files": {"file.txt": [0, 12]}}),
+                encoding="utf-8"
+            )
 
             script = f"""
 set -u -o pipefail
@@ -480,7 +488,7 @@ echo "STATUS=$status"
                 check=False,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("Error: ZIP file for artifact 'datasets' not found in cache", proc.stderr)
+            self.assertIn("Error: ZIP file for artifact 'datasets' not found or stale in cache", proc.stderr)
             self.assertIn("Please run: syk4y kaggle zip", proc.stderr)
             self.assertIn("STATUS=1", proc.stdout)
 
@@ -549,12 +557,15 @@ kaggle_zip --repo-root "$REPO_DIR"
                 check=False,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("Zipping 'datasets' (fingerprint: myfingerprint_zip_test)...", proc.stdout)
+            self.assertIn("Processing zip cache for 'datasets'...", proc.stdout)
             
             # Check zip was generated
-            cached_zip = repo / ".syk4y-temp" / "kaggle-zip-cache" / "myfingerprint_zip_test.zip"
+            cached_zip = repo / ".syk4y-temp" / "kaggle-zip-cache" / "datasets.zip"
             self.assertTrue(cached_zip.exists())
             
+            cached_meta = repo / ".syk4y-temp" / "kaggle-zip-cache" / "datasets.zip.metadata.json"
+            self.assertTrue(cached_meta.exists())
+
             # Verify zip contents
             import zipfile
             with zipfile.ZipFile(cached_zip, "r") as zf:
