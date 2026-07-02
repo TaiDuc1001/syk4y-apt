@@ -120,7 +120,7 @@ upload_single_artifact() {
 
       if [[ "$cache_ok" -eq 1 ]]; then
         echo "Using cached zip for '$artifact_id' (fingerprint: $fingerprint)"
-        cp "$cache_file" "$stage_dir/$item_name.zip" || upload_status=$?
+        ln "$cache_file" "$stage_dir/$item_name.zip" 2>/dev/null || cp "$cache_file" "$stage_dir/$item_name.zip" || upload_status=$?
       else
         echo "Error: ZIP file for artifact '$artifact_id' not found or stale in cache (expected fingerprint: $fingerprint)." >&2
         echo "Please run: syk4y kaggle zip" >&2
