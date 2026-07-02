@@ -340,6 +340,98 @@ echo "STATUS=$status"
             self.assertTrue(state_log.exists())
             self.assertIn("write-state", state_log.read_text(encoding="utf-8"))
 
+    def test_parallel_zip_reproduces_same_content(self):
+        import sys
+        import zipfile
+        if str(REPO_ROOT / "syk4y-lib") not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT / "syk4y-lib"))
+        import kaggle_upload_py_cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            source_dir.mkdir()
+            (source_dir / "file1.txt").write_text("content1", encoding="utf-8")
+            (source_dir / "file2.txt").write_text("content2" * 100, encoding="utf-8")
+            (source_dir / "subdir").mkdir()
+            (source_dir / "subdir" / "file3.txt").write_text("content3", encoding="utf-8")
+
+            output_zip = tmp_path / "output.zip"
+            status = kaggle_upload_py_cli.cmd_pack_artifact_dir_zip(str(source_dir), str(output_zip), "deflate")
+            self.assertEqual(status, 0)
+            self.assertTrue(output_zip.exists())
+
+            # Read back and verify
+            with zipfile.ZipFile(output_zip, "r") as zf:
+                self.assertEqual(sorted(zf.namelist()), ["file1.txt", "file2.txt", "subdir/", "subdir/file3.txt"])
+                self.assertEqual(zf.read("file1.txt"), b"content1")
+                self.assertEqual(zf.read("subdir/file3.txt"), b"content3")
+
+    def test_upload_single_artifact_uses_cached_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_file = tmp_path / "artifact"
+            source_file.mkdir()
+            (source_file / "file.txt").write_text("data\n", encoding="utf-8")
+
+            metadata_file = tmp_path / "dataset-metadata.json"
+            metadata_file.write_text('{"id":"owner/dataset"}\n', encoding="utf-8")
+
+            fake_kaggle = tmp_path / "fake-kaggle.sh"
+            cmd_log = tmp_path / "kaggle-cmd.log"
+            fake_kaggle.write_text(
+                "#!/usr/bin/env bash\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            fake_kaggle.chmod(0o755)
+
+            # Pre-create cached zip file
+            cache_dir = tmp_path / ".syk4y-temp" / "kaggle-zip-cache"
+            cache_dir.mkdir(parents=True)
+            cached_zip = cache_dir / "myfingerprint123.zip"
+            # Create a simple valid zip
+            import zipfile
+            with zipfile.ZipFile(cached_zip, "w") as zf:
+                zf.writestr("file.txt", "cached_data\n")
+
+            script = f"""
+set -u -o pipefail
+source "{TRANSFER_SH}"
+clear_resume_markers() {{ :; }}
+artifact_item_name() {{ printf '%s\\n' "artifact.zip"; }}
+artifact_source_path() {{ printf '%s\\n' "$SOURCE_FILE"; }}
+artifact_metadata_file() {{ printf '%s\\n' "$METADATA_FILE"; }}
+KAGGLE_CMD=("$FAKE_KAGGLE")
+VERSION_MESSAGE="test upload"
+DIR_MODE="zip"
+REPO_ROOT="$REPO_DIR"
+PYTHON_BIN="python3"
+SCRIPT_DIR="{REPO_ROOT}"
+ARTIFACT_ZIP_MODE="deflate"
+upload_single_artifact "datasets" "owner/dataset" "1" "1" "0" "" "myfingerprint123"
+status="$?"
+echo "STATUS=$status"
+"""
+
+            proc = subprocess.run(
+                ["bash", "-lc", script],
+                cwd=REPO_ROOT,
+                env={
+                    **os.environ,
+                    "REPO_DIR": str(tmp_path),
+                    "SOURCE_FILE": str(source_file),
+                    "METADATA_FILE": str(metadata_file),
+                    "FAKE_KAGGLE": str(fake_kaggle),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Using cached zip for 'datasets' (fingerprint: myfingerprint123)", proc.stdout)
+            self.assertIn("STATUS=0", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

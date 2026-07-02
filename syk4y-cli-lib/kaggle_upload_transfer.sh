@@ -77,6 +77,7 @@ upload_single_artifact() {
   local local_changed="$4"
   local meta_changed="$5"
   local force_reason="$6"
+  local fingerprint="${7:-}"
 
   local item_name source_path metadata_file stage_dir upload_status
   item_name="$(artifact_item_name "$artifact_id")"
@@ -96,14 +97,34 @@ upload_single_artifact() {
   stage_dir="$(mktemp -d "$temp_dir/kaggle-upload-stage.${artifact_id}.XXXXXX")"
   upload_status=0
 
+  if [[ -z "$fingerprint" && -d "$source_path" ]]; then
+    fingerprint="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" fingerprint-path "$source_path")"
+  fi
+
+  local cache_dir="$temp_dir/kaggle-zip-cache"
+  mkdir -p "$cache_dir"
+  local cache_file=""
+  if [[ -n "$fingerprint" ]]; then
+    cache_file="$cache_dir/$fingerprint.zip"
+  fi
+
   cp "$metadata_file" "$stage_dir/dataset-metadata.json" || upload_status=$?
   if [[ "$upload_status" -eq 0 ]]; then
     if [[ -d "$source_path" && "$DIR_MODE" == "zip" ]]; then
-      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-        pack-artifact-dir-zip \
-        "$source_path" \
-        "$stage_dir/$item_name.zip" \
-        "$ARTIFACT_ZIP_MODE" || upload_status=$?
+      if [[ -n "$cache_file" && -f "$cache_file" ]]; then
+        echo "Using cached zip for '$artifact_id' (fingerprint: $fingerprint)"
+        cp "$cache_file" "$stage_dir/$item_name.zip" || upload_status=$?
+      else
+        "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+          pack-artifact-dir-zip \
+          "$source_path" \
+          "$stage_dir/$item_name.zip" \
+          "$ARTIFACT_ZIP_MODE" || upload_status=$?
+        if [[ "$upload_status" -eq 0 && -n "$cache_file" ]]; then
+          cp "$stage_dir/$item_name.zip" "$cache_file" || upload_status=$?
+          ls -t "$cache_dir"/*.zip 2>/dev/null | tail -n +21 | xargs rm -f -- 2>/dev/null || true
+        fi
+      fi
     else
       ln -sfn "$source_path" "$stage_dir/$item_name" || upload_status=$?
     fi
@@ -291,7 +312,8 @@ kaggle_upload_run_flow() {
         "${DATASET_EXISTS[$artifact_id]}" \
         "${LOCAL_CHANGED[$artifact_id]}" \
         "${META_CHANGED[$artifact_id]}" \
-        "${FORCE_REASON[$artifact_id]}"; then
+        "${FORCE_REASON[$artifact_id]}" \
+        "${CURRENT_FP[$artifact_id]}"; then
         :
       else
         failed_upload_status=$?

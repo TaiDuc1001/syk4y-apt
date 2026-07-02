@@ -1,4 +1,6 @@
 import argparse
+import binascii
+import concurrent.futures
 import csv
 import io
 import json
@@ -8,9 +10,131 @@ import shutil
 import sys
 import tempfile
 import zipfile
+import zlib
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+
+class ParallelZipFile(zipfile.ZipFile):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._pre_compressed_map = {}
+
+    def set_pre_compressed(self, filename, compressed_data, uncompressed_size, crc):
+        self._pre_compressed_map[filename] = (compressed_data, uncompressed_size, crc)
+
+    def _open_to_write(self, zinfo, force_zip64=False):
+        write_file = super()._open_to_write(zinfo, force_zip64=force_zip64)
+        filename = zinfo.filename
+        if filename in self._pre_compressed_map:
+            comp_data, unc_size, crc = self._pre_compressed_map[filename]
+            
+            def custom_write(data):
+                if write_file.closed:
+                    raise ValueError("I/O operation on closed file.")
+                if write_file._file_size == 0:
+                    write_file._file_size = unc_size
+                    write_file._crc = crc
+                    write_file._compress_size = len(comp_data)
+                    write_file._fileobj.write(comp_data)
+                return len(data)
+                
+            def custom_close():
+                if write_file.closed:
+                    return
+                try:
+                    super(zipfile._ZipWriteFile, write_file).close()
+                    write_file._zinfo.compress_size = write_file._compress_size
+                    write_file._zinfo.CRC = write_file._crc
+                    write_file._zinfo.file_size = write_file._file_size
+                    
+                    if write_file._zinfo.flag_bits & 0x08:
+                        import struct
+                        fmt = "<LLQQ" if write_file._zip64 else "<LLLL"
+                        write_file._fileobj.write(struct.pack(fmt, zipfile._DD_SIGNATURE, write_file._zinfo.CRC,
+                            write_file._zinfo.compress_size, write_file._zinfo.file_size))
+                        write_file._zipfile.start_dir = write_file._fileobj.tell()
+                    else:
+                        write_file._zipfile.start_dir = write_file._fileobj.tell()
+                        write_file._fileobj.seek(write_file._zinfo.header_offset)
+                        write_file._fileobj.write(write_file._zinfo.FileHeader(write_file._zip64))
+                        write_file._fileobj.seek(write_file._zipfile.start_dir)
+
+                    write_file._zipfile.filelist.append(write_file._zinfo)
+                    write_file._zipfile.NameToInfo[write_file._zinfo.filename] = write_file._zinfo
+                finally:
+                    write_file._zipfile._writing = False
+                    
+            write_file.write = custom_write
+            write_file.close = custom_close
+            write_file._compressor = None
+            
+        return write_file
+
+
+def _parallel_pack_zip(output_zip: Path, files_to_compress, compression):
+    MAX_PARALLEL_FILE_SIZE = 16 * 1024 * 1024  # 16MB
+    
+    parallel_jobs = []
+    sequential_files = []
+    
+    for path, rel, ext_attr in files_to_compress:
+        if path is None:
+            sequential_files.append((None, rel, ext_attr))
+            continue
+        try:
+            st = path.stat()
+            size = st.st_size
+        except OSError:
+            continue
+            
+        if size < MAX_PARALLEL_FILE_SIZE and compression == zipfile.ZIP_DEFLATED:
+            parallel_jobs.append((path, rel, ext_attr))
+        else:
+            sequential_files.append((path, rel, ext_attr))
+
+    pre_compressed_map = {}
+    
+    if parallel_jobs:
+        def compress_worker(job):
+            p, r, _ = job
+            try:
+                data = p.read_bytes()
+                crc = binascii.crc32(data) & 0xffffffff
+                compressor = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
+                c_data = compressor.compress(data) + compressor.flush()
+                return r, c_data, len(data), crc
+            except Exception as e:
+                print(f"Warning: failed to read/compress {p}: {e}", file=sys.stderr)
+                return r, None, 0, 0
+
+        max_workers = min(32, (os.cpu_count() or 4) * 2)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = executor.map(compress_worker, parallel_jobs)
+            for r, c_data, unc_size, crc in results:
+                if c_data is not None:
+                    pre_compressed_map[r] = (c_data, unc_size, crc)
+
+    with ParallelZipFile(output_zip, mode="w", compression=compression) as zf:
+        for r, val in pre_compressed_map.items():
+            zf.set_pre_compressed(r, val[0], val[1], val[2])
+            
+        for path, rel, ext_attr in files_to_compress:
+            info = zipfile.ZipInfo(rel)
+            info.date_time = (1980, 1, 1, 0, 0, 0)
+            info.compress_type = compression
+            info.create_system = 3
+            info.external_attr = ext_attr
+            
+            if rel in pre_compressed_map:
+                zf.writestr(info, b"")
+            else:
+                if path is None:
+                    zf.writestr(info, b"")
+                else:
+                    with path.open("rb") as src, zf.open(info, "w", force_zip64=True) as dst:
+                        shutil.copyfileobj(src, dst, length=1024 * 1024)
 
 
 def cmd_fingerprint_path(target: str) -> int:
@@ -213,18 +337,19 @@ def cmd_pack_wheelhouse_zip(source_dir: str, output_zip: str, zip_mode: str) -> 
     mode = (zip_mode or "store").strip().lower()
     compression = zipfile.ZIP_STORED if mode == "store" else zipfile.ZIP_DEFLATED
 
-    with zipfile.ZipFile(output, mode="w", compression=compression) as zf:
-        for path in sorted(source.rglob("*")):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(source).as_posix()
-            info = zipfile.ZipInfo(rel)
-            info.date_time = (1980, 1, 1, 0, 0, 0)
-            info.compress_type = compression
-            info.create_system = 3
-            info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
-            with path.open("rb") as src, zf.open(info, "w", force_zip64=True) as dst:
-                shutil.copyfileobj(src, dst, length=1024 * 1024)
+    files_to_compress = []
+    for path in sorted(source.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(source).as_posix()
+        try:
+            st = path.stat()
+            ext_attr = (st.st_mode & 0xFFFF) << 16
+        except OSError:
+            continue
+        files_to_compress.append((path, rel, ext_attr))
+
+    _parallel_pack_zip(output, files_to_compress, compression)
     return 0
 
 
@@ -235,25 +360,19 @@ def cmd_pack_artifact_dir_zip(source_dir: str, output_zip: str, zip_mode: str) -
     mode = (zip_mode or "store").strip().lower()
     compression = zipfile.ZIP_STORED if mode == "store" else zipfile.ZIP_DEFLATED
 
-    with zipfile.ZipFile(output, mode="w", compression=compression) as zf:
-        for path, rel, typ in _walk_path_following_symlink_dirs(source):
-            if typ == "D":
-                info = zipfile.ZipInfo(rel.rstrip("/") + "/")
-                info.date_time = (1980, 1, 1, 0, 0, 0)
-                info.compress_type = compression
-                info.create_system = 3
-                info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
-                zf.writestr(info, b"")
-                continue
-            if typ != "F":
-                continue
-            info = zipfile.ZipInfo(rel)
-            info.date_time = (1980, 1, 1, 0, 0, 0)
-            info.compress_type = compression
-            info.create_system = 3
-            info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
-            with path.open("rb") as src, zf.open(info, "w", force_zip64=True) as dst:
-                shutil.copyfileobj(src, dst, length=1024 * 1024)
+    files_to_compress = []
+    for path, rel, typ in _walk_path_following_symlink_dirs(source):
+        try:
+            st = path.stat()
+            ext_attr = (st.st_mode & 0xFFFF) << 16
+        except OSError:
+            continue
+        if typ == "D":
+            files_to_compress.append((None, rel.rstrip("/") + "/", ext_attr))
+        elif typ == "F":
+            files_to_compress.append((path, rel, ext_attr))
+
+    _parallel_pack_zip(output, files_to_compress, compression)
     return 0
 
 
