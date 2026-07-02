@@ -73,6 +73,15 @@ def _parallel_pack_zip(output_zip: Path, files_to_compress, compression):
                 
             return write_file
 
+    def print_progress(current, total, prefix="Zipping", suffix="", bar_length=30):
+        if total == 0:
+            return
+        percent = float(current) * 100 / total
+        filled_length = int(round(bar_length * current / total))
+        bar = "█" * filled_length + "-" * (bar_length - filled_length)
+        sys.stderr.write(f"\r{prefix} |{bar}| {percent:.1f}% ({current}/{total}) {suffix}\033[K")
+        sys.stderr.flush()
+
     MAX_PARALLEL_FILE_SIZE = 16 * 1024 * 1024  # 16MB
     
     parallel_jobs = []
@@ -110,10 +119,30 @@ def _parallel_pack_zip(output_zip: Path, files_to_compress, compression):
 
         max_workers = min(32, (os.cpu_count() or 4) * 2)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = executor.map(compress_worker, parallel_jobs)
-            for r, c_data, unc_size, crc in results:
+            futures = {executor.submit(compress_worker, job): job for job in parallel_jobs}
+            total_jobs = len(parallel_jobs)
+            completed_jobs = 0
+            
+            print_progress(0, total_jobs, prefix="Compressing", suffix="")
+            
+            for future in concurrent.futures.as_completed(futures):
+                r, c_data, unc_size, crc = future.result()
                 if c_data is not None:
                     pre_compressed_map[r] = (c_data, unc_size, crc)
+                completed_jobs += 1
+                filename = futures[future][1]
+                if len(filename) > 30:
+                    filename = "..." + filename[-27:]
+                print_progress(completed_jobs, total_jobs, prefix="Compressing", suffix=filename)
+            
+            print_progress(total_jobs, total_jobs, prefix="Compressing", suffix="Done!")
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+
+    total_files = len(files_to_compress)
+    written_files = 0
+    
+    print_progress(0, total_files, prefix="Writing zip", suffix="")
 
     with ParallelZipFile(output_zip, mode="w", compression=compression) as zf:
         for r, val in pre_compressed_map.items():
@@ -126,6 +155,11 @@ def _parallel_pack_zip(output_zip: Path, files_to_compress, compression):
             info.create_system = 3
             info.external_attr = ext_attr
             
+            filename = rel
+            if len(filename) > 30:
+                filename = "..." + filename[-27:]
+            print_progress(written_files, total_files, prefix="Writing zip", suffix=filename)
+
             if rel in pre_compressed_map:
                 zf.writestr(info, b"")
             else:
@@ -134,6 +168,12 @@ def _parallel_pack_zip(output_zip: Path, files_to_compress, compression):
                 else:
                     with path.open("rb") as src, zf.open(info, "w", force_zip64=True) as dst:
                         shutil.copyfileobj(src, dst, length=1024 * 1024)
+            
+            written_files += 1
+            
+        print_progress(total_files, total_files, prefix="Writing zip", suffix="Done!")
+        sys.stderr.write("\n")
+        sys.stderr.flush()
 
 
 def cmd_fingerprint_path(target: str) -> int:
