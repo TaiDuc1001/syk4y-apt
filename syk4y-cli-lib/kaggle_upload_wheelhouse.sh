@@ -2,6 +2,10 @@
 
 build_wheelhouse_if_needed() {
   local prev_input_hash="$1"
+  
+  WHEELHOUSE_PYTHON="$(resolve_wheelhouse_python)"
+  ensure_pip "$WHEELHOUSE_PYTHON"
+
   local -a EXTRA_INDEXES
   mapfile -t EXTRA_INDEXES < <(
     "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" pyproject-extra-indexes "$REPO_ROOT/pyproject.toml"

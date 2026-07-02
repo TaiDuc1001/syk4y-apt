@@ -115,15 +115,9 @@ upload_single_artifact() {
         echo "Using cached zip for '$artifact_id' (fingerprint: $fingerprint)"
         cp "$cache_file" "$stage_dir/$item_name.zip" || upload_status=$?
       else
-        "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-          pack-artifact-dir-zip \
-          "$source_path" \
-          "$stage_dir/$item_name.zip" \
-          "$ARTIFACT_ZIP_MODE" || upload_status=$?
-        if [[ "$upload_status" -eq 0 && -n "$cache_file" ]]; then
-          cp "$stage_dir/$item_name.zip" "$cache_file" || upload_status=$?
-          ls -t "$cache_dir"/*.zip 2>/dev/null | tail -n +21 | xargs rm -f -- 2>/dev/null || true
-        fi
+        echo "Error: ZIP file for artifact '$artifact_id' not found in cache (expected fingerprint: $fingerprint)." >&2
+        echo "Please run: syk4y kaggle zip" >&2
+        upload_status=1
       fi
     else
       ln -sfn "$source_path" "$stage_dir/$item_name" || upload_status=$?
@@ -189,9 +183,6 @@ kaggle_upload_run_flow() {
   cd "$REPO_ROOT"
 
   PYTHON_BIN="$(syk4y_resolve_python_bin_or_die "$REPO_ROOT" "syk4y")"
-  WHEELHOUSE_PYTHON="$(resolve_wheelhouse_python)"
-  ensure_pip "$PYTHON_BIN"
-  ensure_pip "$WHEELHOUSE_PYTHON"
 
   mkdir -p "$UPLOAD_ROOT"
 

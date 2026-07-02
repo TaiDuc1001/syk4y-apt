@@ -12,6 +12,8 @@ source "$SCRIPT_DIR/syk4y-cli-lib/string_utils.sh"
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_login.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_upload.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_zip.sh"
 
 usage() {
   cat "$SCRIPT_DIR/templates/kaggle-main-usage.txt"
@@ -46,6 +48,9 @@ main() {
       ;;
     upload)
       kaggle_upload --repo-root "$repo_root" "$@"
+      ;;
+    zip)
+      kaggle_zip --repo-root "$repo_root" "$@"
       ;;
     account)
       exec "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/account_cli.py" "$@"

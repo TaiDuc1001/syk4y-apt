@@ -98,6 +98,8 @@ ensure_kaggle_cli() {
     fi
   fi
 
+  ensure_pip "$PYTHON_BIN"
+
   if "$PYTHON_BIN" -m pip install --disable-pip-version-check kaggle >/dev/null 2>&1; then
     if resolve_kaggle_cmd; then
       return 0

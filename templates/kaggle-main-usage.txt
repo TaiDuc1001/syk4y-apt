@@ -3,12 +3,14 @@ Usage:
 
 Subcommands:
   login    Configure Kaggle credentials (~/.kaggle/kaggle.json)
+  zip      Zip changed artifacts locally before upload
   upload   Upload changed artifacts to Kaggle (requires Kaggle credentials)
   account  Manage Kaggle account pool (add/list/remove/enable/disable/test)
   run      Multi-account notebook runner (start/status/list/pull/resume)
 
 Examples:
   syk4y kaggle login
+  syk4y kaggle zip
   syk4y kaggle upload --force
   syk4y kaggle upload datasets wheelhouse
   syk4y kaggle account add --id main --username user1 --key xxxxx

@@ -432,6 +432,134 @@ echo "STATUS=$status"
             self.assertIn("Using cached zip for 'datasets' (fingerprint: myfingerprint123)", proc.stdout)
             self.assertIn("STATUS=0", proc.stdout)
 
+    def test_upload_single_artifact_fails_when_zip_cache_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_file = tmp_path / "artifact"
+            source_file.mkdir()
+            (source_file / "file.txt").write_text("data\n", encoding="utf-8")
+
+            metadata_file = tmp_path / "dataset-metadata.json"
+            metadata_file.write_text('{"id":"owner/dataset"}\n', encoding="utf-8")
+
+            fake_kaggle = tmp_path / "fake-kaggle.sh"
+            fake_kaggle.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_kaggle.chmod(0o755)
+
+            script = f"""
+set -u -o pipefail
+source "{TRANSFER_SH}"
+clear_resume_markers() {{ :; }}
+artifact_item_name() {{ printf '%s\\n' "artifact.zip"; }}
+artifact_source_path() {{ printf '%s\\n' "$SOURCE_FILE"; }}
+artifact_metadata_file() {{ printf '%s\\n' "$METADATA_FILE"; }}
+KAGGLE_CMD=("$FAKE_KAGGLE")
+VERSION_MESSAGE="test upload"
+DIR_MODE="zip"
+REPO_ROOT="$REPO_DIR"
+PYTHON_BIN="python3"
+SCRIPT_DIR="{REPO_ROOT}"
+ARTIFACT_ZIP_MODE="deflate"
+upload_single_artifact "datasets" "owner/dataset" "1" "1" "0" "" "myfingerprint_missing"
+status="$?"
+echo "STATUS=$status"
+"""
+
+            proc = subprocess.run(
+                ["bash", "-lc", script],
+                cwd=REPO_ROOT,
+                env={
+                    **os.environ,
+                    "REPO_DIR": str(tmp_path),
+                    "SOURCE_FILE": str(source_file),
+                    "METADATA_FILE": str(metadata_file),
+                    "FAKE_KAGGLE": str(fake_kaggle),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Error: ZIP file for artifact 'datasets' not found in cache", proc.stderr)
+            self.assertIn("Please run: syk4y kaggle zip", proc.stderr)
+            self.assertIn("STATUS=1", proc.stdout)
+
+    def test_zip_command_generates_cache_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            source_file = repo / "artifact"
+            source_file.mkdir()
+            (source_file / "file.txt").write_text("data\n", encoding="utf-8")
+
+            # Setup metadata for resolution
+            upload_root = repo / "kaggle_upload"
+            upload_root.mkdir()
+            dataset_dir = upload_root / "repo-slug-datasets"
+            dataset_dir.mkdir()
+            metadata_file = dataset_dir / "dataset-metadata.json"
+            metadata_file.write_text('{"id":"owner/repo-slug-datasets"}\n', encoding="utf-8")
+
+            zip_sh = REPO_ROOT / "syk4y-cli-lib" / "kaggle_zip.sh"
+
+            script = f"""
+set -euo pipefail
+# Mock functions and source environment
+SCRIPT_DIR="{REPO_ROOT}"
+REPO_ROOT="$REPO_DIR"
+KAGGLE_UPLOAD_ROOT="$UPLOAD_ROOT_ENV"
+PYTHON_BIN="python3"
+DIR_MODE="zip"
+ARTIFACT_ZIP_MODE="deflate"
+FORCE_UPLOAD=0
+VERSION_MESSAGE="test zip"
+
+# Source the transfer library to get helper methods
+source "{TRANSFER_SH}"
+source "{zip_sh}"
+
+# Mock CLI/Prepare functions
+syk4y_resolve_python_bin_or_die() {{ printf '%s\\n' "python3"; }}
+ensure_kaggle_upload_prereqs() {{ :; }}
+resolve_initialized_artifacts() {{
+  ARTIFACT_IDS=("datasets")
+  ALL_ARTIFACT_IDS=("datasets")
+}}
+artifact_source_path() {{ printf '%s\\n' "$SOURCE_FILE"; }}
+artifact_metadata_file() {{ printf '%s\\n' "$METADATA_FILE"; }}
+artifact_item_name() {{ printf '%s\\n' "artifact.zip"; }}
+fingerprint_path() {{ printf '%s\\n' "myfingerprint_zip_test"; }}
+syk4y_ensure_temp_dir_gitignore() {{ :; }}
+
+kaggle_zip --repo-root "$REPO_DIR"
+"""
+            proc = subprocess.run(
+                ["bash", "-lc", script],
+                cwd=REPO_ROOT,
+                env={
+                    **os.environ,
+                    "REPO_DIR": str(repo),
+                    "UPLOAD_ROOT_ENV": str(upload_root),
+                    "SOURCE_FILE": str(source_file),
+                    "METADATA_FILE": str(metadata_file),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Zipping 'datasets' (fingerprint: myfingerprint_zip_test)...", proc.stdout)
+            
+            # Check zip was generated
+            cached_zip = repo / ".syk4y-temp" / "kaggle-zip-cache" / "myfingerprint_zip_test.zip"
+            self.assertTrue(cached_zip.exists())
+            
+            # Verify zip contents
+            import zipfile
+            with zipfile.ZipFile(cached_zip, "r") as zf:
+                self.assertEqual(zf.read("file.txt"), b"data\n")
+
 
 if __name__ == "__main__":
     unittest.main()
