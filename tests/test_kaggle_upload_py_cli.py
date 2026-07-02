@@ -89,12 +89,12 @@ class KaggleUploadPyCliTests(unittest.TestCase):
 
                 wheelhouse = tmp_path / "wheelhouse"
                 wheelhouse.mkdir()
-                (wheelhouse / "pkg.whl").write_bytes(b"wheel")
+                (wheelhouse / "pkg.whl").write_bytes(b"0" * (17 * 1024 * 1024))
                 module.cmd_pack_wheelhouse_zip(str(wheelhouse), str(tmp_path / "wheelhouse.zip"), "store")
 
                 artifacts = tmp_path / "artifacts"
                 artifacts.mkdir()
-                (artifacts / "model.bin").write_bytes(b"model")
+                (artifacts / "model.bin").write_bytes(b"0" * (17 * 1024 * 1024))
                 module.cmd_pack_artifact_dir_zip(str(artifacts), str(tmp_path / "artifacts.zip"), "store")
         finally:
             module.zipfile.ZipFile = original_zip_file

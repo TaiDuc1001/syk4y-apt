@@ -132,23 +132,36 @@ exit 0
             )
             fake_kaggle.chmod(0o755)
 
+            zip_sh = REPO_ROOT / "syk4y-cli-lib" / "kaggle_zip.sh"
+
             script = f"""
 set -euo pipefail
 SCRIPT_DIR="{REPO_ROOT}"
+REPO_ROOT="$REPO_DIR"
+KAGGLE_UPLOAD_ROOT="$UPLOAD_ROOT_ENV"
 PYTHON_BIN="$FAKE_PY"
-BASE_DATASET_SLUG="repo"
-UPLOAD_ROOT="$UPLOAD_ROOT_ENV"
 DIR_MODE="zip"
 ARTIFACT_ZIP_MODE="store"
+FORCE_UPLOAD=0
 VERSION_MESSAGE="test"
 KAGGLE_CMD=("$FAKE_KAGGLE")
-declare -A ARTIFACT_SOURCE_SPEC
-declare -A ARTIFACT_ITEM_NAMES
-ARTIFACT_SOURCE_SPEC["models"]="$SOURCE_DIR"
-ARTIFACT_ITEM_NAMES["models"]="models"
-source "{ARTIFACTS_SH}"
+
 source "{TRANSFER_SH}"
-upload_single_artifact "models" "owner/repo-models" 1 1 0 ""
+source "{zip_sh}"
+
+syk4y_resolve_python_bin_or_die() {{ printf '%s\\n' "$FAKE_PY"; }}
+ensure_kaggle_upload_prereqs() {{ :; }}
+resolve_initialized_artifacts() {{
+  ARTIFACT_IDS=("models")
+  ALL_ARTIFACT_IDS=("models")
+}}
+artifact_source_path() {{ printf '%s\\n' "$SOURCE_DIR"; }}
+artifact_metadata_file() {{ printf '%s\\n' "$METADATA_FILE"; }}
+artifact_item_name() {{ printf '%s\\n' "models"; }}
+fingerprint_path() {{ printf '%s\\n' "myfingerprint123"; }}
+syk4y_ensure_temp_dir_gitignore() {{ :; }}
+
+kaggle_zip --repo-root "$REPO_DIR"
 """
             proc = run_bash(
                 script,
@@ -157,14 +170,15 @@ upload_single_artifact "models" "owner/repo-models" 1 1 0 ""
                     "FAKE_PY": str(fake_python),
                     "FAKE_KAGGLE": str(fake_kaggle),
                     "SOURCE_DIR": str(source_dir),
+                    "METADATA_FILE": str(dataset_dir / "dataset-metadata.json"),
                     "UPLOAD_ROOT_ENV": str(upload_root),
                     "TMP_ROOT": str(tmp_path),
+                    "REPO_DIR": str(tmp_path),
                 },
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             calls = log_path.read_text(encoding="utf-8")
             self.assertIn("PACK_MODE=store", calls)
-            self.assertIn("KAGGLE_DIR_MODE=zip", calls)
 
     def test_resolve_initialized_artifacts_filters_selected_subset(self):
         with tempfile.TemporaryDirectory() as tmp:
