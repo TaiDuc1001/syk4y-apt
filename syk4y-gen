@@ -182,7 +182,6 @@ if [[ "$SKIP_GEN" -eq 0 ]]; then
     echo "Hint: run inside a git repo, or use --skip-gen for setup-only mode." >&2
     exit 1
   fi
-  REPO_ROOT="$GIT_ROOT"
 fi
 
 if [[ "$SKIP_GEN" -eq 1 ]] && [[ "${#SELECTED_ARTIFACTS[@]}" -eq 0 ]]; then
