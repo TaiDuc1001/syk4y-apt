@@ -53,10 +53,21 @@ build_wheelhouse_if_needed() {
         exit 1
       fi
 
-      if ! docker image inspect python:3.10-slim >/dev/null 2>&1; then
-        echo "Error: Docker image python:3.10-slim is not available locally." >&2
-        echo "Please run: docker pull --platform $docker_platform python:3.10-slim" >&2
-        exit 1
+      # Detect Python version from WHEELHOUSE_PYTHON so pip ABI flags and
+      # Docker image match the user's actual environment (e.g. Python 3.11+).
+      local pip_py_version pip_py_compact docker_image
+      pip_py_version="$("${WHEELHOUSE_PYTHON}" --version 2>&1 | sed -E 's/Python ([0-9]+\.[0-9]+)\..*/\1/' | head -1)"
+      [[ -z "$pip_py_version" ]] && pip_py_version="3.10"
+      pip_py_compact="${pip_py_version//./}"
+      docker_image="python:${pip_py_version}-slim"
+
+      if ! docker image inspect "$docker_image" > /dev/null 2>&1; then
+        echo "Docker image $docker_image is not available locally. Attempting to pull..."
+        if ! docker pull --platform "$docker_platform" "$docker_image"; then
+          echo "Error: Failed to pull Docker image $docker_image." >&2
+          echo "Please check your network connection or manually run: docker pull --platform $docker_platform $docker_image" >&2
+          exit 1
+        fi
       fi
 
       # 1. Natively export requirements on the host to avoid QEMU uv segfaults
@@ -115,10 +126,9 @@ build_wheelhouse_if_needed() {
       )
 
       # 3. Determine target platform details for pip download on host
-      local pip_platform pip_py_version pip_impl pip_abi
-      pip_py_version="3.10"
+      local pip_platform pip_impl pip_abi
       pip_impl="cp"
-      pip_abi="cp310"
+      pip_abi="cp${pip_py_compact}"
       if [[ "$target_norm" == "x86_64" ]]; then
         pip_platform="manylinux2014_x86_64"
       elif [[ "$target_norm" == "aarch64" ]]; then
@@ -225,7 +235,7 @@ build_wheelhouse_if_needed() {
           -e WHEEL_FAIL_ON_MISSING="$WHEEL_FAIL_ON_MISSING" \
           -e SYK4Y_BASE_DATASET_SLUG="${BASE_DATASET_SLUG:-}" \
           -e CONTAINER_UPLOAD_DIR="$container_upload_root" \
-          python:3.10-slim \
+          "$docker_image" \
           bash -c 'pip install --upgrade pip --quiet && exec /syk4y-toolkit/syk4y-kaggle upload --repo-root /workspace --upload-dir "$CONTAINER_UPLOAD_DIR" --build-wheel-only' 2>"$docker_err"; then
           
           local err_msg
@@ -270,7 +280,8 @@ build_wheelhouse_if_needed() {
       mv -f "$wheelhouse_tmp_zip" "$WHEELHOUSE_PATH"
       echo "Updated wheelhouse archive: $WHEELHOUSE_PATH"
 
-      rm -rf "$temp_dir"
+      rm -rf "$build_dir"
+      rm -f "$host_req_out"
       return
     fi
   fi
