@@ -114,11 +114,19 @@ build_wheelhouse_if_needed() {
       req_sanitized_out="$build_dir/_requirements_sanitized.txt"
       docker_req_out="$build_dir/_requirements_docker.txt"
 
+      local full_req_backup
+      full_req_backup="$temp_dir/wheelhouse-full-req.txt"
+
       "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
         sanitize-wheelhouse-requirements \
         "$host_req_out" \
         "$req_sanitized_out" \
         "$REPO_ROOT"
+
+      # Backup the full sanitized list NOW before Docker may overwrite
+      # _requirements_sanitized.txt when it runs syk4y-kaggle natively inside
+      # the container (which only sees its own subset of packages).
+      cp -f "$req_sanitized_out" "$full_req_backup"
 
       mapfile -t REQ_ITEMS < <(
         sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' "$req_sanitized_out" \
@@ -267,8 +275,12 @@ build_wheelhouse_if_needed() {
 
       # 6. Pack the wheelhouse and cleanup
       echo "Packing wheelhouse.zip"
-      # Write a sanitized requirements list inside build_dir so the archive has it
-      cp -f "$req_sanitized_out" "$build_dir/_requirements.txt"
+      # Write the FULL sanitized requirements (all packages, not just Docker's
+      # subset) so the archive's _requirements.txt covers the whole wheelhouse.
+      cp -f "$full_req_backup" "$build_dir/_requirements.txt"
+
+      # Remove intermediate requirement files — only _requirements.txt is kept.
+      rm -f "$req_sanitized_out" "$docker_req_out"
 
       "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
         pack-wheelhouse-zip \
@@ -280,8 +292,7 @@ build_wheelhouse_if_needed() {
       mv -f "$wheelhouse_tmp_zip" "$WHEELHOUSE_PATH"
       echo "Updated wheelhouse archive: $WHEELHOUSE_PATH"
 
-      rm -rf "$build_dir"
-      rm -f "$host_req_out"
+      rm -f "$host_req_out" "$full_req_backup"
       return
     fi
   fi
