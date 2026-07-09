@@ -132,7 +132,7 @@ kaggle_upload_prepare_context() {
   fi
 
   REPO_NAME="$(basename "$REPO_ROOT")"
-  BASE_DATASET_SLUG="$(syk4y_slugify "$REPO_NAME")"
+  BASE_DATASET_SLUG="${SYK4Y_BASE_DATASET_SLUG:-$(syk4y_slugify "$REPO_NAME")}"
 
   UPLOAD_ROOT="${KAGGLE_UPLOAD_ROOT:-$REPO_ROOT/kaggle_upload}"
   STATE_FILE="$UPLOAD_ROOT/.upload-state.json"
