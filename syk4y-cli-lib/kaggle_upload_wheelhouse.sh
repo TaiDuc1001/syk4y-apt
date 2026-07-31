@@ -227,9 +227,11 @@ build_wheelhouse_if_needed() {
         # Write remaining requirements to a new file for Docker
         printf '%s\n' "${remaining_reqs[@]}" > "$docker_req_out"
 
+        local repo_basename
+        repo_basename="$(basename "$REPO_ROOT")"
         local container_upload_root="$UPLOAD_ROOT"
         if [[ "$container_upload_root" == "$REPO_ROOT"* ]]; then
-          container_upload_root="/workspace${container_upload_root#$REPO_ROOT}"
+          container_upload_root="/workspace/${repo_basename}${container_upload_root#$REPO_ROOT}"
         fi
 
         local docker_err
@@ -237,21 +239,16 @@ build_wheelhouse_if_needed() {
         if ! docker run --rm \
           --user "$(id -u):$(id -g)" \
           --platform "$docker_platform" \
-          -v "$REPO_ROOT:/workspace" \
+          -v "$REPO_ROOT:/workspace/$repo_basename" \
           -v "$SCRIPT_DIR:/syk4y-toolkit" \
-          -w /workspace \
+          -w "/workspace/$repo_basename" \
           -e PYTHON_BIN=python3 \
           -e WHEELHOUSE_PYTHON=python3 \
           -e WHEEL_ARCH=native \
-          -e EXPORTED_REQUIREMENTS_PATH="/workspace/.syk4y-temp/wheelhouse-build/_requirements_docker.txt" \
-          -e OVERRIDE_BUILD_DIR="/workspace/.syk4y-temp/wheelhouse-build" \
-          -e WHEEL_JOBS="$WHEEL_JOBS" \
-          -e WHEELHOUSE_ZIP_MODE="$WHEELHOUSE_ZIP_MODE" \
-          -e WHEEL_FAIL_ON_MISSING="$WHEEL_FAIL_ON_MISSING" \
-          -e SYK4Y_BASE_DATASET_SLUG="${BASE_DATASET_SLUG:-}" \
-          -e CONTAINER_UPLOAD_DIR="$container_upload_root" \
+          -e EXPORTED_REQUIREMENTS_PATH="/workspace/$repo_basename/.syk4y-temp/wheelhouse-build/_requirements_docker.txt" \
+          -e OVERRIDE_BUILD_DIR="/workspace/$repo_basename/.syk4y-temp/wheelhouse-build" \
           "$docker_image" \
-          /syk4y-toolkit/syk4y-kaggle upload --repo-root /workspace --upload-dir "$container_upload_root" --build-wheel-only 2>"$docker_err"; then
+          /syk4y-toolkit/syk4y-kaggle upload --repo-root "/workspace/$repo_basename" --upload-dir "$container_upload_root" --build-wheel-only 2>"$docker_err"; then
           local err_msg
           err_msg="$(cat "$docker_err")"
           echo "$err_msg" >&2
@@ -307,11 +304,6 @@ build_wheelhouse_if_needed() {
     echo "WHEEL_JOBS must be a positive integer. Got: $WHEEL_JOBS" >&2
     exit 1
   fi
-  if [[ "$WHEEL_FAIL_ON_MISSING" != "0" ]] && [[ "$WHEEL_FAIL_ON_MISSING" != "1" ]]; then
-    echo "WHEEL_FAIL_ON_MISSING must be 0 or 1. Got: $WHEEL_FAIL_ON_MISSING" >&2
-    exit 1
-  fi
-
   local build_dir wheelhouse_tmp_zip req_out req_sanitized_out failed_reqs_file
   local requirements_source uv_lock_path
   local req local_wheel_path
@@ -502,10 +494,6 @@ build_wheelhouse_if_needed() {
     for req in "${FAILED_REQS[@]}"; do
       echo "  - $req"
     done
-    if [[ "$WHEEL_FAIL_ON_MISSING" == "1" ]]; then
-      echo "Error: WHEEL_FAIL_ON_MISSING=1 and some wheels failed to build." >&2
-      exit 1
-    fi
   fi
 
   local wheel_count

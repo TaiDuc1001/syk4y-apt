@@ -35,7 +35,7 @@ require_cmd() {
 
 build_wheelhouse_for_init() {
   local tmp_root tmp_upload_root tmp_wheelhouse_path
-  tmp_root="${SYK4Y_WHEELHOUSE_TMP_ROOT:-$REPO_ROOT/.syk4y-temp/wheelhouse-cache}"
+  tmp_root="$REPO_ROOT/.syk4y-temp/wheelhouse-cache"
   tmp_upload_root="$tmp_root/$REPO_SLUG"
   tmp_wheelhouse_path="$tmp_upload_root/${REPO_SLUG}-wheelhouse/wheelhouse.zip"
 
@@ -207,7 +207,7 @@ REPO_SLUG="$(syk4y_slugify "$REPO_NAME")"
 PYTHON_BIN="$(syk4y_resolve_python_bin_or_die "$REPO_ROOT" "syk4y gen")"
 KAGGLE_USERNAME=""
 if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
-  KAGGLE_USERNAME="$(syk4y_resolve_kaggle_username "$PYTHON_BIN" "${SYK4Y_REQUIRE_KAGGLE_USERNAME:-0}")"
+  KAGGLE_USERNAME="$(syk4y_resolve_kaggle_username "$PYTHON_BIN" 0)"
 fi
 
 if [[ "$OUT_FILE" == /* ]]; then

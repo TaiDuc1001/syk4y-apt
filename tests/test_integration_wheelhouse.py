@@ -264,19 +264,6 @@ six = { index = "pypi-custom" }
             self.assertEqual(len(zip_paths), 1)
             self.verify_wheelhouse_zip_strict(zip_paths[0], {"six": "1.17.0"})
 
-    def test_build_failure_on_missing_package(self):
-        with safe_temp_dir() as tmp_path:
-            subprocess.run(["uv", "init", "--no-workspace", "--name", "app"], cwd=tmp_path, check=True)
-            subprocess.run(["uv", "add", "six==1.17.0"], cwd=tmp_path, check=True)
-
-            # Edit uv.lock to refer to a non-existent package
-            lock_file = tmp_path / "uv.lock"
-            lock_content = lock_file.read_text(encoding="utf-8")
-            lock_content = lock_content.replace('name = "six"', 'name = "non-existent-package-abc"')
-            lock_file.write_text(lock_content, encoding="utf-8")
-
-            res = self.run_syk4y(["init", "wheelhouse"], cwd=tmp_path, env={"WHEEL_FAIL_ON_MISSING": "1"})
-            self.assertNotEqual(res.returncode, 0)
 
     def test_incremental_build_skipped_when_unchanged(self):
         with safe_temp_dir() as tmp_path:

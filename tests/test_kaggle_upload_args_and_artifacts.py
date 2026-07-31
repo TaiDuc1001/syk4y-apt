@@ -56,14 +56,14 @@ kaggle_upload_parse_args "data.sets" "data-sets"
 set -euo pipefail
 source "{STRING_UTILS_SH}"
 source "{ARGS_SH}"
-kaggle_upload_parse_args --repo-root "$REPO_DIR"
+kaggle_upload_parse_args --repo-root "$REPO_DIR" --dir-mode store
 kaggle_upload_prepare_context
 echo "DIR_MODE=$DIR_MODE"
 echo "ARTIFACT_ZIP_MODE=$ARTIFACT_ZIP_MODE"
 """
             proc = run_bash(
                 script,
-                env={"REPO_DIR": str(repo), "KAGGLE_DIR_MODE": "store"},
+                env={"REPO_DIR": str(repo)},
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("DIR_MODE=zip", proc.stdout)

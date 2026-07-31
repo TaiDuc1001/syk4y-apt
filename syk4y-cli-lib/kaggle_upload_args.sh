@@ -141,26 +141,26 @@ kaggle_upload_prepare_context() {
   fi
 
   REPO_NAME="$(basename "$REPO_ROOT")"
-  BASE_DATASET_SLUG="${SYK4Y_BASE_DATASET_SLUG:-$(syk4y_slugify "$REPO_NAME")}"
+  BASE_DATASET_SLUG="$(syk4y_slugify "$REPO_NAME")"
 
-  UPLOAD_ROOT="${KAGGLE_UPLOAD_ROOT:-$REPO_ROOT/kaggle_upload}"
+  UPLOAD_ROOT="$REPO_ROOT/kaggle_upload"
   STATE_FILE="$UPLOAD_ROOT/.upload-state.json"
 
   ARTIFACT_IDS=()
   ALL_ARTIFACT_IDS=()
 
-  DIR_MODE="${KAGGLE_DIR_MODE:-zip}"
-  ARTIFACT_ZIP_MODE="${KAGGLE_ARTIFACT_ZIP_MODE:-$DIR_MODE}"
-  VERSION_MESSAGE="${KAGGLE_VERSION_MESSAGE:-Artifacts update $(date '+%Y-%m-%d %H:%M:%S')}"
+  DIR_MODE="zip"
+  ARTIFACT_ZIP_MODE="$DIR_MODE"
+  VERSION_MESSAGE="Artifacts update $(date '+%Y-%m-%d %H:%M:%S')"
   WHEELHOUSE_DATASET_DIR="$UPLOAD_ROOT/${BASE_DATASET_SLUG}-wheelhouse"
   WHEELHOUSE_PATH="$WHEELHOUSE_DATASET_DIR/wheelhouse.zip"
-  WHEEL_JOBS="${WHEEL_JOBS:-16}"
-  WHEELHOUSE_ZIP_MODE="${WHEELHOUSE_ZIP_MODE:-store}"
-  WHEEL_FAIL_ON_MISSING="${WHEEL_FAIL_ON_MISSING:-0}"
+  WHEEL_JOBS=16
+  WHEELHOUSE_ZIP_MODE="store"
+  WHEEL_FAIL_ON_MISSING=0
   WHEELHOUSE_INPUT_KEY="__wheelhouse_input__"
   WHEELHOUSE_INPUT_HASH=""
-  FORCE_UPLOAD="${KAGGLE_FORCE_UPLOAD:-0}"
-  WHEEL_ARCH="${KAGGLE_WHEEL_ARCH:-native}"
+  FORCE_UPLOAD=0
+  WHEEL_ARCH="native"
   if [[ -n "$WHEEL_ARCH_OVERRIDE" ]]; then
     WHEEL_ARCH="$WHEEL_ARCH_OVERRIDE"
   fi
@@ -177,9 +177,7 @@ kaggle_upload_prepare_context() {
   fi
   if [[ -n "$DIR_MODE_OVERRIDE" ]]; then
     DIR_MODE="$DIR_MODE_OVERRIDE"
-    if [[ -z "${KAGGLE_ARTIFACT_ZIP_MODE:-}" ]]; then
-      ARTIFACT_ZIP_MODE="$DIR_MODE_OVERRIDE"
-    fi
+    ARTIFACT_ZIP_MODE="$DIR_MODE_OVERRIDE"
   fi
 
   if [[ "$DIR_MODE" == "store" ]]; then
