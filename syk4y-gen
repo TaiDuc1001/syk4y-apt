@@ -45,7 +45,7 @@ build_wheelhouse_for_init() {
   echo "    wheelhouse build root: $tmp_upload_root"
   local arch_args=()
   if [[ -n "$WHEEL_ARCH" ]]; then
-    arch_args+=(--wheel-arch "$WHEEL_ARCH")
+    arch_args+=(--arch "$WHEEL_ARCH")
   fi
   "$SCRIPT_DIR/syk4y-kaggle" --repo-root "$REPO_ROOT" upload --upload-dir "$tmp_upload_root" --build-wheel-only "${arch_args[@]}"
 
@@ -106,11 +106,20 @@ while [[ $# -gt 0 ]]; do
       UPLOAD_ROOT="$2"
       shift 2
       ;;
+    --arch)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      WHEEL_ARCH="$2"
+      shift 2
+      ;;
     --wheel-arch)
       if [[ $# -lt 2 ]]; then
         echo "Missing value for $1" >&2
         exit 2
       fi
+      echo "Warning: --wheel-arch is deprecated and will be removed in a future version. Use --arch instead." >&2
       WHEEL_ARCH="$2"
       shift 2
       ;;

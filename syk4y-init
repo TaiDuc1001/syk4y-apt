@@ -35,12 +35,21 @@ while [[ $# -gt 0 ]]; do
       args+=("$1" "$2")
       shift 2
       ;;
+    --arch)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      args+=(--arch "$2")
+      shift 2
+      ;;
     --wheel-arch)
       if [[ $# -lt 2 ]]; then
         echo "Missing value for $1" >&2
         exit 2
       fi
-      args+=("$1" "$2")
+      echo "Warning: --wheel-arch is deprecated and will be removed in a future version. Use --arch instead." >&2
+      args+=(--arch "$2")
       shift 2
       ;;
     -h|--help)

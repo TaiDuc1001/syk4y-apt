@@ -290,6 +290,66 @@ echo "MISSING=$missing"
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("MISSING=wheelhouse.zip", proc.stdout)
 
+    def test_kaggle_zip_skips_wheelhouse_with_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            upload_root = tmp_path / "kaggle_upload"
+            upload_root.mkdir(parents=True)
+            log_path = tmp_path / "calls.log"
+
+            fake_python = tmp_path / "fake-python.sh"
+            fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_python.chmod(0o755)
+
+            fake_kaggle = tmp_path / "fake-kaggle.sh"
+            fake_kaggle.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_kaggle.chmod(0o755)
+
+            zip_sh = REPO_ROOT / "syk4y-cli-lib" / "kaggle_zip.sh"
+
+            script = f"""
+set -euo pipefail
+SCRIPT_DIR="{REPO_ROOT}"
+REPO_ROOT="$REPO_DIR"
+KAGGLE_UPLOAD_ROOT="$UPLOAD_ROOT_ENV"
+PYTHON_BIN="$FAKE_PY"
+DIR_MODE="zip"
+ARTIFACT_ZIP_MODE="store"
+FORCE_UPLOAD=0
+VERSION_MESSAGE="test"
+KAGGLE_CMD=("$FAKE_KAGGLE")
+
+source "{TRANSFER_SH}"
+source "{zip_sh}"
+
+syk4y_resolve_python_bin_or_die() {{ printf '%s\\n' "$FAKE_PY"; }}
+ensure_kaggle_upload_prereqs() {{ :; }}
+resolve_initialized_artifacts() {{
+  ARTIFACT_IDS=("wheelhouse")
+  ALL_ARTIFACT_IDS=("wheelhouse")
+}}
+artifact_source_path() {{ printf '%s\\n' "dummy"; }}
+artifact_metadata_file() {{ printf '%s\\n' "dummy"; }}
+artifact_item_name() {{ printf '%s\\n' "wheelhouse"; }}
+fingerprint_path() {{ printf '%s\\n' "myfingerprint123"; }}
+syk4y_ensure_temp_dir_gitignore() {{ :; }}
+
+kaggle_zip --repo-root "$REPO_DIR" --dir-mode store
+"""
+            proc = run_bash(
+                script,
+                env={
+                    "CALL_LOG": str(log_path),
+                    "FAKE_PY": str(fake_python),
+                    "FAKE_KAGGLE": str(fake_kaggle),
+                    "UPLOAD_ROOT_ENV": str(upload_root),
+                    "TMP_ROOT": str(tmp_path),
+                    "REPO_DIR": str(tmp_path),
+                },
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Skipping 'wheelhouse'", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

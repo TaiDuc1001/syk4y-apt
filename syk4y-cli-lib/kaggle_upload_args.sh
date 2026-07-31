@@ -57,11 +57,20 @@ kaggle_upload_parse_args() {
         BUILD_WHEEL_ONLY=1
         shift
         ;;
+      --arch)
+        if [[ $# -lt 2 ]]; then
+          echo "Missing value for $1" >&2
+          exit 2
+        fi
+        WHEEL_ARCH_OVERRIDE="$2"
+        shift 2
+        ;;
       --wheel-arch)
         if [[ $# -lt 2 ]]; then
           echo "Missing value for $1" >&2
           exit 2
         fi
+        echo "Warning: --wheel-arch is deprecated and will be removed in a future version. Use --arch instead." >&2
         WHEEL_ARCH_OVERRIDE="$2"
         shift 2
         ;;

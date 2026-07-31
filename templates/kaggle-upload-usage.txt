@@ -9,7 +9,8 @@ Options:
   -m, --message TEXT    Kaggle version message override
   --dir-mode MODE       Kaggle dir mode: skip|zip|tar|store (store = zip without compression)
   --build-wheel-only    Build/update wheelhouse.zip only, skip Kaggle upload
-  --wheel-arch ARCH     Target architecture for wheelhouse: native|x86_64|aarch64 (default: native)
+  --arch ARCH           Target architecture for wheelhouse: native|x86_64|aarch64 (default: native)
+  --wheel-arch ARCH     (Deprecated) Alias for --arch
   --repo-root DIR       Target repository root (default: current directory)
   -h, --help            Show this help
 

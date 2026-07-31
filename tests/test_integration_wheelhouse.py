@@ -203,7 +203,7 @@ six = { index = "pypi-custom" }
             subprocess.run(["uv", "init", "--no-workspace", "--name", "app"], cwd=tmp_path, check=True)
             subprocess.run(["uv", "add", "ipaddr==2.2.0", "requests==2.28.1"], cwd=tmp_path, check=True)
 
-            res = self.run_syk4y(["init", "wheelhouse", "--wheel-arch", "amd64"], cwd=tmp_path)
+            res = self.run_syk4y(["init", "wheelhouse", "--arch", "amd64"], cwd=tmp_path)
             self.assertEqual(res.returncode, 0, f"stdout: {res.stdout}\nstderr: {res.stderr}")
 
             zip_paths = list(tmp_path.glob("kaggle_upload/**/wheelhouse.zip"))
@@ -219,6 +219,18 @@ six = { index = "pypi-custom" }
                 "urllib3": "1.26.20",
             }
             self.verify_wheelhouse_zip_strict(zip_paths[0], expected)
+
+    def test_deprecated_wheel_arch_warning(self):
+        with safe_temp_dir() as tmp_path:
+            subprocess.run(["uv", "init", "--no-workspace", "--name", "app"], cwd=tmp_path, check=True)
+            subprocess.run(["uv", "add", "six==1.17.0"], cwd=tmp_path, check=True)
+
+            res = self.run_syk4y(["init", "wheelhouse", "--wheel-arch", "amd64"], cwd=tmp_path)
+            self.assertEqual(res.returncode, 0, f"stdout: {res.stdout}\nstderr: {res.stderr}")
+            self.assertIn("Warning: --wheel-arch is deprecated", res.stderr)
+
+            zip_paths = list(tmp_path.glob("kaggle_upload/**/wheelhouse.zip"))
+            self.assertEqual(len(zip_paths), 1)
 
     def test_pruning_and_cache_reuse(self):
         with safe_temp_dir() as tmp_path:

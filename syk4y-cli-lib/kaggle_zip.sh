@@ -40,6 +40,7 @@ kaggle_zip() (
   for artifact_id in "${ARTIFACT_IDS[@]}"; do
     if [[ "$artifact_id" == "wheelhouse" ]]; then
       # User request: "việc zip cho các artifact ko phải wheelhouse sẽ tách thành command syk4y kaggle zip"
+      echo "Skipping 'wheelhouse' (wheelhouse zipping is managed automatically by other commands and not supported by 'syk4y kaggle zip')."
       continue
     fi
 
