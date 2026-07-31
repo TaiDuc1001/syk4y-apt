@@ -385,10 +385,13 @@ build_wheelhouse_if_needed() {
   req_out="$req_sanitized_out"
 
   # Prune old/stale wheels from the build directory (if reusing a persistent dir)
-  "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-    prune-wheelhouse-build-dir \
-    "$build_dir" \
-    "$req_out"
+  # Skip pruning if we are running inside the Docker container (which only receives a subset of requirements)
+  if [[ -z "${EXPORTED_REQUIREMENTS_PATH:-}" ]]; then
+    "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+      prune-wheelhouse-build-dir \
+      "$build_dir" \
+      "$req_out"
+  fi
 
   if [[ ! -s "$req_out" ]]; then
     echo "Error: no dependencies found from $requirements_source." >&2

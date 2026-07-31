@@ -82,7 +82,7 @@ six = { index = "pypi-custom" }
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             subprocess.run(["uv", "init", "--no-workspace", "--name", "app"], cwd=tmp_path, check=True)
-            subprocess.run(["uv", "add", "six"], cwd=tmp_path, check=True)
+            subprocess.run(["uv", "add", "six", "openai-clip==1.0.1"], cwd=tmp_path, check=True)
 
             # Target x86_64 to trigger Docker build
             res = self.run_syk4y(["init", "wheelhouse", "--wheel-arch", "amd64"], cwd=tmp_path)
@@ -94,7 +94,9 @@ six = { index = "pypi-custom" }
             with zipfile.ZipFile(zip_paths[0], "r") as zf:
                 namelist = zf.namelist()
                 six_wheels = [name for name in namelist if "six-" in name]
-                self.assertEqual(len(six_wheels), 1)
+                clip_wheels = [name for name in namelist if "openai_clip" in name]
+                self.assertEqual(len(six_wheels), 1, f"six wheel missing (likely deleted by container pruning): {namelist}")
+                self.assertEqual(len(clip_wheels), 1, f"openai-clip wheel missing: {namelist}")
 
     def test_pruning_and_cache_reuse(self):
         with tempfile.TemporaryDirectory() as tmpdir:
