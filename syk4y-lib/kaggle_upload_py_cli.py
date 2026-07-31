@@ -690,6 +690,70 @@ def cmd_sanitize_wheelhouse_requirements(
     return 0
 
 
+def cmd_prune_wheelhouse_build_dir(source_dir: str, requirements_file: str) -> int:
+    source = Path(source_dir)
+    req_path = Path(requirements_file)
+    if not req_path.is_file():
+        print(f"Error: requirements file {requirements_file} not found.", file=sys.stderr)
+        return 1
+
+    allowed_packages = {}
+    allowed_wheel_filenames = set()
+
+    for line in req_path.read_text(encoding="utf-8").splitlines():
+        line = _strip_inline_comment(line.strip())
+        if not line or line.startswith("#") or line.startswith("-"):
+            continue
+        if line.endswith(".whl"):
+            allowed_wheel_filenames.add(Path(line).name)
+            continue
+
+        parts = line.split(";", 1)
+        req_part = parts[0].strip()
+        if "==" in req_part:
+            pkg_name, pkg_ver = req_part.split("==", 1)
+            pkg_name = _normalize_dist_name(pkg_name.strip())
+            pkg_ver = pkg_ver.strip()
+            allowed_packages.setdefault(pkg_name, set()).add(pkg_ver)
+        else:
+            pkg_name = _normalize_dist_name(req_part)
+            allowed_packages.setdefault(pkg_name, set()).add("*")
+
+    if not source.is_dir():
+        return 0
+
+    deleted_count = 0
+    for path in source.glob("*.whl"):
+        filename = path.name
+        if filename in allowed_wheel_filenames:
+            continue
+
+        # Wheel filename format: {distribution}-{version}-...
+        parts = filename.split("-")
+        if len(parts) < 2:
+            continue
+
+        dist_name = _normalize_dist_name(parts[0])
+        dist_ver = parts[1]
+
+        if dist_name not in allowed_packages:
+            print(f"Pruning unused wheel: {filename} (package not in requirements)", file=sys.stderr)
+            path.unlink()
+            deleted_count += 1
+            continue
+
+        versions = allowed_packages[dist_name]
+        if "*" not in versions and dist_ver not in versions:
+            print(f"Pruning old version wheel: {filename} (expected version in {versions})", file=sys.stderr)
+            path.unlink()
+            deleted_count += 1
+            continue
+
+    if deleted_count > 0:
+        print(f"Pruned {deleted_count} old/unused wheel(s) from {source_dir}", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="kaggle_upload_py_cli.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -746,6 +810,10 @@ def main() -> int:
     p_swr.add_argument("output_path")
     p_swr.add_argument("repo_root", nargs="?", default="")
 
+    p_prune = sub.add_parser("prune-wheelhouse-build-dir")
+    p_prune.add_argument("source_dir")
+    p_prune.add_argument("requirements_file")
+
     args = parser.parse_args()
 
     if args.command == "fingerprint-path":
@@ -774,6 +842,8 @@ def main() -> int:
         return cmd_kaggle_resume_marker(args.path, args.resume_dir)
     if args.command == "csv-first-column-contains":
         return cmd_csv_first_column_contains(args.needle)
+    if args.command == "prune-wheelhouse-build-dir":
+        return cmd_prune_wheelhouse_build_dir(args.source_dir, args.requirements_file)
     if args.command == "sanitize-wheelhouse-requirements":
         return cmd_sanitize_wheelhouse_requirements(
             args.input_path,

@@ -128,6 +128,12 @@ build_wheelhouse_if_needed() {
       # the container (which only sees its own subset of packages).
       cp -f "$req_sanitized_out" "$full_req_backup"
 
+      # Prune old/stale wheels from the persistent build directory
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+        prune-wheelhouse-build-dir \
+        "$build_dir" \
+        "$full_req_backup"
+
       mapfile -t REQ_ITEMS < <(
         sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' "$req_sanitized_out" \
           | grep -Ev '^(#|$|-)'
@@ -378,6 +384,12 @@ build_wheelhouse_if_needed() {
   fi
   req_out="$req_sanitized_out"
 
+  # Prune old/stale wheels from the build directory (if reusing a persistent dir)
+  "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+    prune-wheelhouse-build-dir \
+    "$build_dir" \
+    "$req_out"
+
   if [[ ! -s "$req_out" ]]; then
     echo "Error: no dependencies found from $requirements_source." >&2
     exit 1
@@ -445,7 +457,7 @@ build_wheelhouse_if_needed() {
   REQ_ITEMS=("${PIP_REQ_ITEMS[@]}")
 
   local -a pip_cmd_base extra_index_args
-  pip_cmd_base=("$WHEELHOUSE_PYTHON" -m pip wheel --no-deps --progress-bar off --wheel-dir "$build_dir")
+  pip_cmd_base=("$WHEELHOUSE_PYTHON" -m pip wheel --no-deps --progress-bar off --wheel-dir "$build_dir" --find-links "$build_dir")
   extra_index_args=()
   for url in "${EXTRA_INDEXES[@]}"; do
     extra_index_args+=(--extra-index-url "$url")
