@@ -235,6 +235,7 @@ build_wheelhouse_if_needed() {
         local docker_err
         docker_err="$(mktemp "/tmp/docker-build-error.XXXXXX.log")"
         if ! docker run --rm \
+          --user "$(id -u):$(id -g)" \
           --platform "$docker_platform" \
           -v "$REPO_ROOT:/workspace" \
           -v "$SCRIPT_DIR:/syk4y-toolkit" \
@@ -250,8 +251,7 @@ build_wheelhouse_if_needed() {
           -e SYK4Y_BASE_DATASET_SLUG="${BASE_DATASET_SLUG:-}" \
           -e CONTAINER_UPLOAD_DIR="$container_upload_root" \
           "$docker_image" \
-          bash -c 'pip install --upgrade pip --quiet && exec /syk4y-toolkit/syk4y-kaggle upload --repo-root /workspace --upload-dir "$CONTAINER_UPLOAD_DIR" --build-wheel-only' 2>"$docker_err"; then
-          
+          /syk4y-toolkit/syk4y-kaggle upload --repo-root /workspace --upload-dir "$container_upload_root" --build-wheel-only 2>"$docker_err"; then
           local err_msg
           err_msg="$(cat "$docker_err")"
           echo "$err_msg" >&2
