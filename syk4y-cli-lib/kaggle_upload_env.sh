@@ -63,6 +63,11 @@ ensure_pip() {
 }
 
 resolve_kaggle_cmd() {
+  if "$PYTHON_BIN" -c "import kaggle" >/dev/null 2>&1; then
+    KAGGLE_CMD=("$PYTHON_BIN" "-c" "from kaggle.cli import main; import sys; sys.exit(main())")
+    return 0
+  fi
+
   local python_path="$PYTHON_BIN"
   local python_kaggle=""
 
