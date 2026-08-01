@@ -19,7 +19,7 @@ UPLOAD_ROOT="kaggle_upload"
 REPO_ROOT_OVERRIDE=""
 SKIP_GEN=0
 SELECTED_ARTIFACTS=()
-WHEEL_ARCH=""
+WHEEL_ARCH="${WHEEL_ARCH:-}"
 
 usage() {
   cat "$TEMPLATE_DIR/syk4y-gen-usage.txt"
