@@ -74,10 +74,6 @@ upload_single_artifact() {
   local artifact_id="$1"
   local dataset_ref="$2"
   local dataset_exists="$3"
-  local local_changed="$4"
-  local meta_changed="$5"
-  local force_reason="$6"
-  local fingerprint="${7:-}"
 
   local item_name source_path metadata_file stage_dir upload_status
   item_name="$(artifact_item_name "$artifact_id")"
@@ -97,32 +93,18 @@ upload_single_artifact() {
   stage_dir="$(mktemp -d "$temp_dir/kaggle-upload-stage.${artifact_id}.XXXXXX")"
   upload_status=0
 
-  if [[ -z "$fingerprint" && -d "$source_path" ]]; then
-    fingerprint="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" fingerprint-path "$source_path")"
-  fi
-
   local cache_dir="$temp_dir/kaggle-zip-cache"
   mkdir -p "$cache_dir"
   local cache_file="$cache_dir/${artifact_id}.zip"
-  local cache_meta="$cache_dir/${artifact_id}.zip.metadata.json"
 
   cp "$metadata_file" "$stage_dir/dataset-metadata.json" || upload_status=$?
   if [[ "$upload_status" -eq 0 ]]; then
     if [[ -d "$source_path" && "$DIR_MODE" == "zip" ]]; then
-      local cache_ok=0
-      if [[ -f "$cache_file" && -f "$cache_meta" ]]; then
-        local cached_fp
-        cached_fp="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" read-metadata-fingerprint "$cache_meta")"
-        if [[ "$cached_fp" == "$fingerprint" ]]; then
-          cache_ok=1
-        fi
-      fi
-
-      if [[ "$cache_ok" -eq 1 ]]; then
-        echo "Using cached zip for '$artifact_id' (fingerprint: $fingerprint)"
+      if [[ -f "$cache_file" ]]; then
+        echo "Using cached zip for '$artifact_id'"
         ln "$cache_file" "$stage_dir/$item_name.zip" 2>/dev/null || cp "$cache_file" "$stage_dir/$item_name.zip" || upload_status=$?
       else
-        echo "Error: ZIP file for artifact '$artifact_id' not found or stale in cache (expected fingerprint: $fingerprint)." >&2
+        echo "Error: ZIP file for artifact '$artifact_id' not found in cache." >&2
         echo "Please run: syk4y kaggle zip" >&2
         upload_status=1
       fi
@@ -136,15 +118,7 @@ upload_single_artifact() {
 
   if [[ "$upload_status" -eq 0 ]]; then
     if [[ "$dataset_exists" -eq 1 ]]; then
-      if [[ -n "$force_reason" ]]; then
-        echo "Forcing '$artifact_id' dataset update: $force_reason"
-      elif [[ "$local_changed" -eq 1 ]]; then
-        echo "Updating '$artifact_id' dataset. Changed artifact: $item_name"
-      elif [[ "$meta_changed" -eq 1 ]]; then
-        echo "Updating '$artifact_id' dataset metadata only."
-      else
-        echo "Updating '$artifact_id' dataset."
-      fi
+      echo "Updating '$artifact_id' dataset."
       run_kaggle_upload_checked datasets version -p "$stage_dir" -m "${VERSION_MESSAGE} [$artifact_id]" -r "$DIR_MODE" || upload_status=$?
     else
       echo "Dataset '$dataset_ref' does not exist yet; creating with artifact '$item_name'."
@@ -182,9 +156,7 @@ sync_dataset_metadata_owner() {
 
 kaggle_upload_run_flow() {
   local artifact_id source_path metadata_file item_name
-  local current_fp previous_fp current_meta_fp previous_meta_fp
-  local local_changed meta_changed dataset_ref dataset_exists
-  local force_reason remote_missing should_upload
+  local dataset_ref dataset_exists
   local failed_upload_status probe_status
 
   cd "$REPO_ROOT"
@@ -211,17 +183,8 @@ kaggle_upload_run_flow() {
   resolve_initialized_artifacts
   verify_dataset_structure
 
-  local state_exists=0
-  if [[ -f "$STATE_FILE" ]]; then
-    state_exists=1
-  fi
-
   declare -A DATASET_REF
   declare -A DATASET_EXISTS
-  declare -A LOCAL_CHANGED
-  declare -A META_CHANGED
-  declare -A FORCE_REASON
-  declare -A SHOULD_UPLOAD
 
   for artifact_id in "${ARTIFACT_IDS[@]}"; do
     source_path="$(artifact_source_path "$artifact_id")"
@@ -234,24 +197,6 @@ kaggle_upload_run_flow() {
     fi
 
     sync_dataset_metadata_owner "$metadata_file"
-
-    current_fp="$(fingerprint_path "$source_path")"
-    CURRENT_FP["$artifact_id"]="$current_fp"
-    previous_fp="$(read_state_value "$(state_key_artifact_fp "$artifact_id")")"
-
-    current_meta_fp="$(fingerprint_path "$metadata_file")"
-    CURRENT_META_FP["$artifact_id"]="$current_meta_fp"
-    previous_meta_fp="$(read_state_value "$(state_key_metadata_fp "$artifact_id")")"
-
-    local_changed=0
-    if [[ "$current_fp" != "$previous_fp" ]]; then
-      local_changed=1
-    fi
-
-    meta_changed=0
-    if [[ "$current_meta_fp" != "$previous_meta_fp" ]]; then
-      meta_changed=1
-    fi
 
     dataset_ref="$(extract_dataset_ref "$metadata_file")"
     if [[ -z "$dataset_ref" ]]; then
@@ -270,53 +215,18 @@ kaggle_upload_run_flow() {
       fi
     fi
     DATASET_EXISTS["$artifact_id"]="$dataset_exists"
-
-    force_reason=""
-    if [[ "$FORCE_UPLOAD" == "1" ]]; then
-      force_reason="KAGGLE_FORCE_UPLOAD=1"
-    elif [[ "$dataset_exists" -eq 1 ]]; then
-      remote_missing="$(remote_missing_expected_artifacts "$dataset_ref" "$artifact_id" "$item_name")"
-      if [[ -n "$remote_missing" ]]; then
-        force_reason="remote dataset missing expected artifacts: $remote_missing"
-      fi
-    fi
-
-    # First run safety: if local state does not exist, baseline existing datasets.
-    # This avoids uploading everything immediately when remote and local are already in sync.
-    if [[ "$state_exists" -eq 0 ]] && [[ "$dataset_exists" -eq 1 ]] && [[ -z "$force_reason" ]] && [[ "$FORCE_UPLOAD" != "1" ]]; then
-      local_changed=0
-      meta_changed=0
-    fi
-
-    should_upload=0
-    if [[ "$dataset_exists" -eq 0 ]] || [[ "$local_changed" -eq 1 ]] || [[ "$meta_changed" -eq 1 ]] || [[ -n "$force_reason" ]]; then
-      should_upload=1
-    fi
-
-    LOCAL_CHANGED["$artifact_id"]="$local_changed"
-    META_CHANGED["$artifact_id"]="$meta_changed"
-    FORCE_REASON["$artifact_id"]="$force_reason"
-    SHOULD_UPLOAD["$artifact_id"]="$should_upload"
   done
 
-  local any_upload=0
   failed_upload_status=0
   for artifact_id in "${ARTIFACT_IDS[@]}"; do
-    if [[ "${SHOULD_UPLOAD[$artifact_id]}" -eq 1 ]]; then
-      any_upload=1
-      if upload_single_artifact \
-        "$artifact_id" \
-        "${DATASET_REF[$artifact_id]}" \
-        "${DATASET_EXISTS[$artifact_id]}" \
-        "${LOCAL_CHANGED[$artifact_id]}" \
-        "${META_CHANGED[$artifact_id]}" \
-        "${FORCE_REASON[$artifact_id]}" \
-        "${CURRENT_FP[$artifact_id]}"; then
-        :
-      else
-        failed_upload_status=$?
-        break
-      fi
+    if upload_single_artifact \
+      "$artifact_id" \
+      "${DATASET_REF[$artifact_id]}" \
+      "${DATASET_EXISTS[$artifact_id]}"; then
+      :
+    else
+      failed_upload_status=$?
+      break
     fi
   done
 
@@ -326,15 +236,6 @@ kaggle_upload_run_flow() {
   fi
 
   write_state_file
-
-  if [[ "$any_upload" -eq 0 ]]; then
-    if [[ "$state_exists" -eq 0 ]]; then
-      echo "Initialized local upload state from existing Kaggle datasets. Run again to upload future changes only."
-    else
-      echo "No artifact/metadata changes detected across all artifact datasets. Nothing to upload."
-    fi
-    return
-  fi
-
-  echo "Done uploading changed artifact datasets."
+  echo "Done uploading artifact datasets."
 }
+

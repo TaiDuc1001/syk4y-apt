@@ -158,7 +158,6 @@ resolve_initialized_artifacts() {{
 artifact_source_path() {{ printf '%s\\n' "$SOURCE_DIR"; }}
 artifact_metadata_file() {{ printf '%s\\n' "$METADATA_FILE"; }}
 artifact_item_name() {{ printf '%s\\n' "models"; }}
-fingerprint_path() {{ printf '%s\\n' "myfingerprint123"; }}
 syk4y_ensure_temp_dir_gitignore() {{ :; }}
 
 kaggle_zip --repo-root "$REPO_DIR" --dir-mode store
@@ -331,7 +330,6 @@ resolve_initialized_artifacts() {{
 artifact_source_path() {{ printf '%s\\n' "dummy"; }}
 artifact_metadata_file() {{ printf '%s\\n' "dummy"; }}
 artifact_item_name() {{ printf '%s\\n' "wheelhouse"; }}
-fingerprint_path() {{ printf '%s\\n' "myfingerprint123"; }}
 syk4y_ensure_temp_dir_gitignore() {{ :; }}
 
 kaggle_zip --repo-root "$REPO_DIR" --dir-mode store

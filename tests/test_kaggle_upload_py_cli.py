@@ -121,26 +121,6 @@ class KaggleUploadPyCliTests(unittest.TestCase):
                 self.assertIn("UCF101/clip.txt", zf.namelist())
                 self.assertEqual(zf.read("UCF101/clip.txt"), b"video payload\n")
 
-    def test_fingerprint_path_tracks_nested_symlink_target_content(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            external = tmp_path / "external" / "UCF101"
-            external.mkdir(parents=True)
-            payload = external / "clip.txt"
-            payload.write_text("before\n", encoding="utf-8")
-
-            source = tmp_path / "datasets"
-            source.mkdir()
-            (source / "UCF101").symlink_to(external, target_is_directory=True)
-
-            before = run_py_cli("fingerprint-path", str(source))
-            self.assertEqual(before.returncode, 0, before.stderr)
-
-            payload.write_text("after\n", encoding="utf-8")
-            after = run_py_cli("fingerprint-path", str(source))
-            self.assertEqual(after.returncode, 0, after.stderr)
-
-            self.assertNotEqual(before.stdout.strip(), after.stdout.strip())
 
     def test_rewrite_dataset_owner_repairs_stale_metadata_id(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -219,10 +199,10 @@ class KaggleUploadPyCliTests(unittest.TestCase):
             with zipfile.ZipFile(output_zip, "r") as zf:
                 self.assertEqual(zf.read("file1.txt"), b"hello1")
 
-            # Load initial fingerprint
+            # Load initial files metadata
             import json
             meta_data = json.loads(metadata_file.read_text(encoding="utf-8"))
-            initial_fp = meta_data["fingerprint"]
+            self.assertIn("file1.txt", meta_data["files"])
 
             # 2. Add a new file and modify the old one
             import time
@@ -233,9 +213,9 @@ class KaggleUploadPyCliTests(unittest.TestCase):
             ret = module.cmd_pack_artifact_dir_zip(str(source), str(output_zip), "store")
             self.assertEqual(ret, 0)
 
-            # Check that fingerprint changed
+            # Check that files metadata updated
             meta_data2 = json.loads(metadata_file.read_text(encoding="utf-8"))
-            self.assertNotEqual(initial_fp, meta_data2["fingerprint"])
+            self.assertIn("file2.txt", meta_data2["files"])
 
             # Verify both files are in the zip and modified version is read
             with zipfile.ZipFile(output_zip, "r") as zf:

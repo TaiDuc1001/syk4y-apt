@@ -179,56 +179,7 @@ def _parallel_pack_zip(output_zip: Path, files_to_compress, compression, mode="w
         sys.stderr.flush()
 
 
-def _compute_dir_fingerprint(p: Path) -> str:
-    import hashlib
-    h = hashlib.sha256()
-    h.update(b"D\0")
-    for q, rel, typ in _walk_path_following_symlink_dirs(p):
-        st = q.stat() if typ in {"D", "F"} else q.lstat()
-        h.update(typ.encode())
-        h.update(b"\0")
-        h.update(rel.encode())
-        h.update(b"\0")
-        h.update(str(st.st_size).encode())
-        h.update(b"\0")
-        h.update(str(st.st_mtime_ns).encode())
-        h.update(b"\0")
-        if q.is_symlink():
-            h.update(os.readlink(q).encode())
-            h.update(b"\0")
-    return h.hexdigest()
 
-
-def cmd_fingerprint_path(target: str) -> int:
-    import hashlib
-
-    p = Path(target)
-    if not p.exists():
-        print("")
-        return 0
-
-    if p.is_file():
-        h = hashlib.sha256()
-        st = p.stat()
-        h.update(b"F\0")
-        h.update(str(st.st_size).encode())
-        h.update(b"\0")
-        h.update(str(st.st_mtime_ns).encode())
-        h.update(b"\0")
-        print(h.hexdigest())
-    elif p.is_dir():
-        print(_compute_dir_fingerprint(p))
-    else:
-        h = hashlib.sha256()
-        st = p.stat()
-        h.update(b"O\0")
-        h.update(str(st.st_size).encode())
-        h.update(b"\0")
-        h.update(str(st.st_mtime_ns).encode())
-        h.update(b"\0")
-        print(h.hexdigest())
-
-    return 0
 
 
 def _walk_path_following_symlink_dirs(root: Path):
@@ -474,27 +425,14 @@ def cmd_pack_artifact_dir_zip(source_dir: str, output_zip: str, zip_mode: str, f
     else:
         print("Zip archive is already up-to-date.", file=sys.stderr)
 
-    # 5. Save new metadata file with current fingerprint
-    fingerprint = _compute_dir_fingerprint(source)
-    
+    # 5. Save new metadata file for incremental packing
     metadata = {
-        "fingerprint": fingerprint,
         "files": {rel: [current_files[rel][0], current_files[rel][1]] for rel in current_files}
     }
     
     # Ensure parent directory of metadata file exists
     metadata_file.parent.mkdir(parents=True, exist_ok=True)
     metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    return 0
-
-
-def cmd_read_metadata_fingerprint(metadata_file: str) -> int:
-    meta = Path(metadata_file)
-    try:
-        data = json.loads(meta.read_text(encoding="utf-8"))
-        print(data.get("fingerprint", "").strip())
-    except Exception:
-        print("")
     return 0
 
 
@@ -758,9 +696,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="kaggle_upload_py_cli.py")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_fp = sub.add_parser("fingerprint-path")
-    p_fp.add_argument("target")
-
     p_rsv = sub.add_parser("read-state-value")
     p_rsv.add_argument("state_file")
     p_rsv.add_argument("key")
@@ -785,9 +720,6 @@ def main() -> int:
     p_paz.add_argument("output_zip")
     p_paz.add_argument("zip_mode")
     p_paz.add_argument("--force", action="store_true")
-
-    p_rmf = sub.add_parser("read-metadata-fingerprint")
-    p_rmf.add_argument("metadata_file")
 
     p_edr = sub.add_parser("extract-dataset-ref")
     p_edr.add_argument("metadata_file")
@@ -816,8 +748,6 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    if args.command == "fingerprint-path":
-        return cmd_fingerprint_path(args.target)
     if args.command == "read-state-value":
         return cmd_read_state_value(args.state_file, args.key)
     if args.command == "read-artifact-settings":
@@ -830,8 +760,6 @@ def main() -> int:
         return cmd_pack_wheelhouse_zip(args.source_dir, args.output_zip, args.zip_mode)
     if args.command == "pack-artifact-dir-zip":
         return cmd_pack_artifact_dir_zip(args.source_dir, args.output_zip, args.zip_mode, force=args.force)
-    if args.command == "read-metadata-fingerprint":
-        return cmd_read_metadata_fingerprint(args.metadata_file)
     if args.command == "extract-dataset-ref":
         return cmd_extract_dataset_ref(args.metadata_file)
     if args.command == "rewrite-dataset-owner":

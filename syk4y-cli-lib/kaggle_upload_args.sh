@@ -189,8 +189,6 @@ kaggle_upload_prepare_context() {
   WHEELHOUSE_DATASET_DIR="$UPLOAD_ROOT/${BASE_DATASET_SLUG}-wheelhouse"
   WHEELHOUSE_PATH="$WHEELHOUSE_DATASET_DIR/wheelhouse.zip"
 
-  declare -gA CURRENT_FP
-  declare -gA CURRENT_META_FP
   declare -gA ARTIFACT_SOURCE_SPEC
   declare -gA ARTIFACT_ITEM_NAMES
   KAGGLE_CMD=()
