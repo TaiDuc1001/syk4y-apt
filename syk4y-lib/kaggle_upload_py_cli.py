@@ -358,81 +358,35 @@ def cmd_pack_wheelhouse_zip(source_dir: str, output_zip: str, zip_mode: str) -> 
 def cmd_pack_artifact_dir_zip(source_dir: str, output_zip: str, zip_mode: str, force: bool = False) -> int:
     source = Path(source_dir)
     output = Path(output_zip)
-    metadata_file = output.with_name(output.name + ".metadata.json")
 
     mode = (zip_mode or "store").strip().lower()
     compression = zipfile.ZIP_STORED if mode == "store" else zipfile.ZIP_DEFLATED
 
-    # 1. Walk source directory to collect current files state
-    current_files = {}  # rel_path -> (mtime_ns, size, path, ext_attr, typ)
+    files_to_compress = []
     for path, rel, typ in _walk_path_following_symlink_dirs(source):
         try:
             st = path.stat() if typ in {"D", "F"} else path.lstat()
             ext_attr = (st.st_mode & 0xFFFF) << 16
-            mtime_ns = st.st_mtime_ns
-            size = st.st_size
         except OSError:
             continue
         if typ == "D":
-            current_files[rel.rstrip("/") + "/"] = (mtime_ns, 0, None, ext_attr, "D")
+            files_to_compress.append((None, rel.rstrip("/") + "/", ext_attr))
         elif typ == "F":
-            current_files[rel] = (mtime_ns, size, path, ext_attr, "F")
+            files_to_compress.append((path, rel, ext_attr))
         else:
-            current_files[rel] = (mtime_ns, size, path, ext_attr, typ)
-
-    # 2. Check if we can perform an incremental update
-    incremental = False
-    cached_metadata = None
-    if output.exists() and metadata_file.exists() and not force:
-        try:
-            cached_metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-            if isinstance(cached_metadata, dict) and "files" in cached_metadata:
-                incremental = True
-        except Exception:
-            pass
-
-    # 3. Compute files to add/modify (omitting deleted files silently)
-    files_to_compress = []
-    
-    if incremental:
-        cached_files = cached_metadata.get("files", {})
-        # Find new or modified files
-        for rel, (mtime_ns, size, path, ext_attr, typ) in current_files.items():
-            if rel not in cached_files:
-                # New file
-                files_to_compress.append((path, rel, ext_attr))
-            else:
-                cached_mtime, cached_size = cached_files[rel]
-                if mtime_ns != cached_mtime or size != cached_size:
-                    # Modified file
-                    files_to_compress.append((path, rel, ext_attr))
-    else:
-        # Full rebuild
-        if output.exists():
-            try:
-                output.unlink()
-            except OSError:
-                pass
-        for rel, (mtime_ns, size, path, ext_attr, typ) in current_files.items():
             files_to_compress.append((path, rel, ext_attr))
 
-    # 4. Perform zipping if needed
-    if files_to_compress:
-        write_mode = "a" if incremental else "w"
-        if write_mode == "a":
-            print(f"Incremental update: appending {len(files_to_compress)} new/modified files...", file=sys.stderr)
-        _parallel_pack_zip(output, files_to_compress, compression, mode=write_mode)
-    else:
-        print("Zip archive is already up-to-date.", file=sys.stderr)
+    # Always cleanly overwrite old zip
+    if output.exists():
+        try:
+            output.unlink()
+        except OSError:
+            pass
 
-    # 5. Save new metadata file for incremental packing
-    metadata = {
-        "files": {rel: [current_files[rel][0], current_files[rel][1]] for rel in current_files}
-    }
-    
-    # Ensure parent directory of metadata file exists
-    metadata_file.parent.mkdir(parents=True, exist_ok=True)
-    metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    # Ensure parent directory exists
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    _parallel_pack_zip(output, files_to_compress, compression, mode="w")
     return 0
 
 
