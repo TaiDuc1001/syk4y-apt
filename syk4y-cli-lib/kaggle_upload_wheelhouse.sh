@@ -59,11 +59,11 @@ build_wheelhouse_if_needed() {
       pip_py_version="$("${WHEELHOUSE_PYTHON}" --version 2>&1 | sed -E 's/Python ([0-9]+\.[0-9]+)\..*/\1/' | head -1)"
       [[ -z "$pip_py_version" ]] && pip_py_version="3.10"
       pip_py_compact="${pip_py_version//./}"
-      docker_image="python:${pip_py_version}-slim"
+      docker_image="${SYK4Y_DOCKER_IMAGE:-python:${pip_py_version}}"
 
-      if ! docker image inspect "$docker_image" > /dev/null 2>&1; then
-        echo "Docker image $docker_image is not available locally. Attempting to pull..."
-        if ! docker pull --platform "$docker_platform" "$docker_image"; then
+      echo "Ensuring Docker image $docker_image ($docker_platform) is available..."
+      if ! docker pull --platform "$docker_platform" "$docker_image"; then
+        if ! docker image inspect "$docker_image" > /dev/null 2>&1; then
           echo "Error: Failed to pull Docker image $docker_image." >&2
           echo "Please check your network connection or manually run: docker pull --platform $docker_platform $docker_image" >&2
           exit 1
@@ -242,6 +242,8 @@ build_wheelhouse_if_needed() {
           -v "$REPO_ROOT:/workspace/$repo_basename" \
           -v "$SCRIPT_DIR:/syk4y-toolkit" \
           -w "/workspace/$repo_basename" \
+          -e HOME=/tmp \
+          -e PIP_CACHE_DIR=/tmp/.cache/pip \
           -e PYTHON_BIN=python3 \
           -e WHEELHOUSE_PYTHON=python3 \
           -e WHEEL_ARCH=native \

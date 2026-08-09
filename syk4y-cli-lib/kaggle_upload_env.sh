@@ -63,11 +63,6 @@ ensure_pip() {
 }
 
 resolve_kaggle_cmd() {
-  if "$PYTHON_BIN" -c "import kaggle" >/dev/null 2>&1; then
-    KAGGLE_CMD=("$PYTHON_BIN" "-c" "from kaggle.cli import main; import sys; sys.exit(main())")
-    return 0
-  fi
-
   local python_path="$PYTHON_BIN"
   local python_kaggle=""
 
@@ -81,6 +76,20 @@ resolve_kaggle_cmd() {
   # The Kaggle package installs a console-script entry point but does not
   # provide kaggle.__main__, so `python -m kaggle` is not a valid probe.
   if [[ -n "$python_kaggle" && -x "$python_kaggle" ]]; then
+    # Verify if shebang interpreter is broken (relocated environment)
+    local shebang=""
+    read -r shebang < "$python_kaggle" || true
+    if [[ "$shebang" == "#!"* ]]; then
+      local interpreter="${shebang#\#!}"
+      interpreter="${interpreter%% *}"
+      if [[ ! -x "$interpreter" ]]; then
+        # Shebang interpreter is missing/broken. Fall back to Python import if usable
+        if "$PYTHON_BIN" -c "import sys, kaggle; sys.exit(0)" >/dev/null 2>&1; then
+          KAGGLE_CMD=("$PYTHON_BIN" "-c" "from kaggle.cli import main; import sys; sys.exit(main())")
+          return 0
+        fi
+      fi
+    fi
     KAGGLE_CMD=("$python_kaggle")
     return 0
   fi
