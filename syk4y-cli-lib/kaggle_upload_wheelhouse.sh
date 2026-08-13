@@ -188,7 +188,7 @@ build_wheelhouse_if_needed() {
         echo "Downloading pre-built wheels natively on host with parallel jobs: $WHEEL_JOBS"
         if ! printf '%s\0' "${PIP_REQ_ITEMS[@]}" \
           | xargs -0 -P "$WHEEL_JOBS" -I{} bash -c '
-              req="$1"
+              req_raw="$1"
               repo_root="$2"
               build_dir="$3"
               pip_platform="$4"
@@ -198,6 +198,7 @@ build_wheelhouse_if_needed() {
               shift 7
               
               cd "$repo_root"
+              req="${req_raw%%;*}"
               if ! env PIP_DISABLE_PIP_VERSION_CHECK=1 "$@" \
                 --only-binary=:all: \
                 --platform "$pip_platform" \
@@ -207,9 +208,9 @@ build_wheelhouse_if_needed() {
                 --no-deps \
                 -d "$build_dir" \
                 "$req" >/dev/null 2>&1; then
-                printf "%s\n" "$req" >> "$HOST_FAILED_REQS_FILE"
+                printf "%s\n" "$req_raw" >> "$HOST_FAILED_REQS_FILE"
               else
-                echo "  Downloaded: $req (native)"
+                echo "  Downloaded: $req_raw (native)"
               fi
             ' _ "{}" "$REPO_ROOT" "$build_dir" "$pip_platform" "$pip_py_version" "$pip_impl" "$pip_abi" "$WHEELHOUSE_PYTHON" -m pip download "${extra_index_args[@]}"; then
           true
