@@ -99,7 +99,7 @@ resolve_initialized_artifacts() {
     ARTIFACT_IDS+=("$artifact_id")
     ARTIFACT_SOURCE_SPEC["$artifact_id"]="$source_spec"
     ARTIFACT_ITEM_NAMES["$artifact_id"]="$item_name"
-  done < <(find "$UPLOAD_ROOT" -mindepth 1 -maxdepth 1 -type d -name "${BASE_DATASET_SLUG}-*" -printf '%p\n' 2>/dev/null | LC_ALL=C sort)
+  done < <(find "$UPLOAD_ROOT" -mindepth 1 -maxdepth 1 -type d -name "${BASE_DATASET_SLUG}-*" 2>/dev/null | while IFS= read -r p; do basename "$p"; done | LC_ALL=C sort)
 
   if [[ "${#ARTIFACT_IDS[@]}" -eq 0 ]]; then
     echo "Error: no initialized artifacts found under '$UPLOAD_ROOT'." >&2
