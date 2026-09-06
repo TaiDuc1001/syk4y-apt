@@ -1,0 +1,31 @@
+# macOS support workflow
+name: Release macOS Package
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Optional macOS version'
+        required: false
+        default: ''
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create macOS package
+        run: |
+          version="${{ github.event.inputs.version || '0.0.0+macos' }}"
+          mkdir -p dist/macos/syk4y
+          cp syk4y* dist/macos/syk4y/
+          cp -r syk4y-cli-lib dist/macos/syk4y/
+          cp -r templates dist/macos/syk4y/
+          (cd dist/macos && zip -r "syk4y-${version}.zip" "syk4y")
+          echo "version=$version" >> $GITHUB_ENV
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: macos-${{ env.version }}
+          files: dist/macos/*.zip
