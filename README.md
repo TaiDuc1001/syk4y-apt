@@ -281,3 +281,25 @@ scripts/build-deb.sh --version 0.1.0
 scripts/build-apt-repo.sh --output-dir site --deb dist/deb/syk4y_0.1.0_all.deb
 scripts/sign-apt-release.sh --repo-dir site --suite stable --key-id <KEY_ID>
 ```
+
+## macOS Support
+
+This project works on macOS with bash. If you encounter `find: -printf: unknown primary or operator`, see PR #1 for a fix.
+
+### Quick install on macOS
+
+```bash
+# Clone and add to PATH
+git clone https://github.com/TaiDuc1001/syk4y-apt.git
+export PATH="$PWD/syk4y-apt:$PATH"
+
+# Or copy scripts
+cp syk4y* /usr/local/bin/
+```
+
+### Homebrew formula (pending)
+
+```bash
+# Once merged, you can install via:
+brew install syk4y
+```

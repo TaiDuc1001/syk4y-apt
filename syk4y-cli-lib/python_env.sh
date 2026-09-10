@@ -46,7 +46,7 @@ syk4y_find_repo_venv_python() {
       printf '%s\n' "$candidate"
       return 0
     fi
-  done < <(find "$repo_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | LC_ALL=C sort -u)
+  done < <(find "$repo_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r p; do basename "$p"; done | LC_ALL=C sort -u)
 
   # Last resort: accept any direct child virtual environment layout,
   # even when directory naming does not contain "venv"/"env".
@@ -56,7 +56,7 @@ syk4y_find_repo_venv_python() {
       printf '%s\n' "$candidate"
       return 0
     fi
-  done < <(find "$repo_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | LC_ALL=C sort -u)
+  done < <(find "$repo_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r p; do basename "$p"; done | LC_ALL=C sort -u)
 
   return 1
 }
