@@ -292,7 +292,25 @@ Each successful run publishes a GitHub prerelease containing:
 
 Get the latest package from [GitHub Releases](https://github.com/TaiDuc1001/syk4y-apt/releases).
 
-### Install on macOS
+### Install with Homebrew
+
+The repository itself is a custom Homebrew tap. Add it with its explicit URL (the repository name is
+not the default `homebrew-<tap>` naming convention), then install the formula:
+
+```bash
+brew tap TaiDuc1001/syk4y-apt https://github.com/TaiDuc1001/syk4y-apt
+brew trust --formula TaiDuc1001/syk4y-apt/syk4y
+brew install TaiDuc1001/syk4y-apt/syk4y
+syk4y doctor
+```
+
+Homebrew requires explicit trust for formulae from third-party taps. The `brew trust --formula`
+command above grants trust only to `syk4y`, not every current or future formula in the tap.
+
+Run `brew update` and `brew upgrade syk4y` to receive newer releases. The macOS release workflow
+updates `Formula/syk4y.rb` after every successful build on `main`.
+
+### Install with the `.pkg` installer
 
 #### 1. Install prerequisites
 
