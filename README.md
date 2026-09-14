@@ -284,33 +284,93 @@ scripts/sign-apt-release.sh --repo-dir site --suite stable --key-id <KEY_ID>
 
 ## macOS Support
 
-macOS packages are built automatically for every commit merged to `main`. Each run publishes a
-GitHub Release asset named `syk4y-<version>-macos-universal.pkg` plus `SHA256SUMS`.
+A macOS installer is created automatically whenever a commit is pushed to `main`.
+Each successful run publishes a GitHub prerelease containing:
 
-### Install from a GitHub Release
+- `syk4y-<version>-macos-universal.pkg`
+- `SHA256SUMS`
 
-1. Install Bash 4+ (macOS ships Bash 3.2, while `syk4y` requires newer Bash features):
+Get the latest package from [GitHub Releases](https://github.com/TaiDuc1001/syk4y-apt/releases).
+
+### Install on macOS
+
+#### 1. Install prerequisites
+
+`syk4y` requires Bash 4 or newer. macOS includes Bash 3.2, so install the current Bash with
+[Homebrew](https://brew.sh/):
 
 ```bash
 brew install bash
 ```
 
-2. Download the `.pkg` and `SHA256SUMS` from the relevant **macOS package** GitHub Release.
-   Verify the package before installation:
+> Apple Silicon installs Homebrew Bash at `/opt/homebrew/bin/bash`; Intel Macs normally use
+> `/usr/local/bin/bash`. The installed `syk4y` launcher detects both locations automatically.
+
+#### 2. Download and verify the installer
+
+Download **both** the `.pkg` and `SHA256SUMS` from the same macOS GitHub prerelease, then verify
+the exact package before installation:
 
 ```bash
+cd ~/Downloads
 shasum -a 256 -c SHA256SUMS
 ```
 
-3. Install the package and verify the CLI:
+Continue only if the result is:
+
+```text
+syk4y-<version>-macos-universal.pkg: OK
+```
+
+#### 3. Install and validate
 
 ```bash
 sudo installer -pkg syk4y-<version>-macos-universal.pkg -target /
 syk4y doctor
 ```
 
-The installer places the application payload in `/usr/local/lib/syk4y` and launcher commands in
-`/usr/local/bin`: `syk4y`, `syk4y-init`, `syk4y-gen`, `syk4y-kaggle`, and `syk4y-doctor`.
+The installer stores the application payload in `/usr/local/lib/syk4y` and installs these launcher
+commands in `/usr/local/bin`:
 
-> The package is not code-signed or notarized. It is distributed through GitHub Releases with a
-> SHA-256 checksum; validate the checksum before installation.
+```text
+syk4y
+syk4y-init
+syk4y-gen
+syk4y-kaggle
+syk4y-doctor
+make-gen-full-repo.sh
+```
+
+After installation, use the same commands documented above. For example:
+
+```bash
+cd /path/to/your/repo
+syk4y doctor
+syk4y init checkpoints datasets models wheelhouse
+syk4y kaggle login
+syk4y kaggle upload
+```
+
+### macOS troubleshooting
+
+**`syk4y on macOS requires Bash 4 or newer`**
+
+```bash
+brew install bash
+```
+
+Then open a new terminal and run `syk4y doctor` again.
+
+**`syk4y: command not found` after installation**
+
+The installer uses `/usr/local/bin`. Check that it is on your shell path:
+
+```bash
+printf '%s\n' "$PATH"
+ls -l /usr/local/bin/syk4y
+```
+
+Open a new terminal if the command was installed during the current session.
+
+> The package is currently not code-signed or notarized. It is distributed through GitHub Releases
+> with a SHA-256 checksum; verify `SHA256SUMS` before installing.
