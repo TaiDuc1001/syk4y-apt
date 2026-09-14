@@ -19,11 +19,6 @@ concurrency:
 
 jobs:
   build-macos:
-    # Formula-only commits are made by this workflow after a release. Do not
-    # release again for those commits, or the workflow would create a loop.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      !contains(github.event.head_commit.message, '[skip macos release]')
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -85,6 +80,11 @@ jobs:
             dist/macos/*.pkg
             dist/macos/SHA256SUMS
 
+      - name: Load Homebrew tap deploy key
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
       - name: Update Homebrew formula
         env:
           VERSION: ${{ steps.meta.outputs.version }}
@@ -93,23 +93,25 @@ jobs:
           set -euo pipefail
           source_archive_url="https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"
           archive="$(mktemp "${RUNNER_TEMP}/syk4y-source.XXXXXX.tar.gz")"
-          trap 'rm -f "$archive"' EXIT
+          tap_dir="$(mktemp -d "${RUNNER_TEMP}/syk4y-homebrew-tap.XXXXXX")"
+          trap 'rm -f "$archive"; rm -rf "$tap_dir"' EXIT
           curl --fail --location --retry 3 --silent --show-error "$source_archive_url" -o "$archive"
           source_sha256="$(shasum -a 256 "$archive" | cut -d ' ' -f 1)"
 
+          git clone git@github.com:mihtriii/homebrew-syk4y.git "$tap_dir"
           scripts/render-homebrew-formula.sh \
             --version "$VERSION" \
             --source-url "$source_archive_url" \
             --sha256 "$source_sha256" \
-            --output Formula/syk4y.rb
+            --output "$tap_dir/Formula/syk4y.rb"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/syk4y.rb
-          if git diff --cached --quiet; then
+          git -C "$tap_dir" config user.name "github-actions[bot]"
+          git -C "$tap_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$tap_dir" add Formula/syk4y.rb
+          if git -C "$tap_dir" diff --cached --quiet; then
             echo "Homebrew formula already matches this release."
             exit 0
           fi
 
-          git commit -m "chore: update Homebrew formula for $VERSION [skip macos release]"
-          git push origin HEAD:main
+          git -C "$tap_dir" commit -m "chore: update syk4y to $VERSION"
+          git -C "$tap_dir" push origin HEAD:main
