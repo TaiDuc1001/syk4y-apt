@@ -284,22 +284,33 @@ scripts/sign-apt-release.sh --repo-dir site --suite stable --key-id <KEY_ID>
 
 ## macOS Support
 
-This project works on macOS with bash. If you encounter `find: -printf: unknown primary or operator`, see PR #1 for a fix.
+macOS packages are built automatically for every commit merged to `main`. Each run publishes a
+GitHub Release asset named `syk4y-<version>-macos-universal.pkg` plus `SHA256SUMS`.
 
-### Quick install on macOS
+### Install from a GitHub Release
 
-```bash
-# Clone and add to PATH
-git clone https://github.com/TaiDuc1001/syk4y-apt.git
-export PATH="$PWD/syk4y-apt:$PATH"
-
-# Or copy scripts
-cp syk4y* /usr/local/bin/
-```
-
-### Homebrew formula (pending)
+1. Install Bash 4+ (macOS ships Bash 3.2, while `syk4y` requires newer Bash features):
 
 ```bash
-# Once merged, you can install via:
-brew install syk4y
+brew install bash
 ```
+
+2. Download the `.pkg` and `SHA256SUMS` from the relevant **macOS package** GitHub Release.
+   Verify the package before installation:
+
+```bash
+shasum -a 256 -c SHA256SUMS
+```
+
+3. Install the package and verify the CLI:
+
+```bash
+sudo installer -pkg syk4y-<version>-macos-universal.pkg -target /
+syk4y doctor
+```
+
+The installer places the application payload in `/usr/local/lib/syk4y` and launcher commands in
+`/usr/local/bin`: `syk4y`, `syk4y-init`, `syk4y-gen`, `syk4y-kaggle`, and `syk4y-doctor`.
+
+> The package is not code-signed or notarized. It is distributed through GitHub Releases with a
+> SHA-256 checksum; validate the checksum before installation.

@@ -1,4 +1,3 @@
-# macOS support workflow
 name: Release macOS Package
 
 on:
@@ -7,25 +6,76 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Optional macOS version'
+        description: Optional numeric macOS package version (for example, 1.2.3)
         required: false
-        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Create macOS package
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
         run: |
-          version="${{ github.event.inputs.version || '0.0.0+macos' }}"
-          mkdir -p dist/macos/syk4y
-          cp syk4y* dist/macos/syk4y/
-          cp -r syk4y-cli-lib dist/macos/syk4y/
-          cp -r templates dist/macos/syk4y/
-          (cd dist/macos && zip -r "syk4y-${version}.zip" "syk4y")
-          echo "version=$version" >> $GITHUB_ENV
-      - uses: softprops/action-gh-release@v2
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          if [[ -z "$version" ]]; then
+            version="0.0.${GITHUB_RUN_NUMBER}"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+            echo "Invalid macOS package version: $version" >&2
+            exit 1
+          fi
+
+          short_sha="${GITHUB_SHA::12}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=macos-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "release_name=macOS package ${version} (${short_sha})" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS installer package
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/build-macos-pkg.sh \
+            --version "${{ steps.meta.outputs.version }}" \
+            --output-dir dist/macos
+          shasum -a 256 dist/macos/*.pkg > dist/macos/SHA256SUMS
+
+      - name: Verify package payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="dist/macos/syk4y-${{ steps.meta.outputs.version }}-macos-universal.pkg"
+          test -f "$package"
+          pkgutil --payload-files "$package" | grep -F '/usr/local/bin/syk4y'
+          pkgutil --payload-files "$package" | grep -F '/usr/local/lib/syk4y/syk4y'
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: macos-${{ env.version }}
-          files: dist/macos/*.zip
+          name: syk4y-macos-${{ steps.meta.outputs.version }}
+          path: dist/macos/
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.meta.outputs.release_name }}
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            dist/macos/*.pkg
+            dist/macos/SHA256SUMS
