@@ -521,10 +521,33 @@ def cmd_parse_kaggle_status(status_output: str, exit_code_str: str) -> int:
     # Redact any sensitive tokens/credentials
     redacted = re.sub(r'(?i)(key|token|secret|password|bearer)[=:\s]+[A-Za-z0-9_-]{8,}', r'\1=***REDACTED***', raw)
     text_lower = redacted.lower()
+    clean_raw = redacted.strip()
+
+    # 0. Check structured JSON if available
+    if clean_raw.startswith("{") and clean_raw.endswith("}"):
+        try:
+            parsed = json.loads(clean_raw)
+            if isinstance(parsed, dict):
+                status_val = str(parsed.get("status") or "").lower().strip()
+                error_msg = str(parsed.get("error") or parsed.get("errorMessage") or parsed.get("message") or "")
+                if error_msg or status_val in ("failed", "error"):
+                    print(f"FAILED: {error_msg or status_val}")
+                    return 20
+                if exit_code != 0:
+                    print(f"FAILED: non-zero exit code {exit_code}")
+                    return 20
+                if status_val == "ready":
+                    print("READY")
+                    return 0
+                if status_val in ("pending", "processing", "queued", "creating"):
+                    print("PROCESSING")
+                    return 10
+        except Exception:
+            pass
 
     # 1. Authentication / Authorization error (401 / 403 / credentials)
     if re.search(r'\b(401|403)\b', text_lower) or "unauthorized" in text_lower or "forbidden" in text_lower or "invalid credentials" in text_lower or "api key not found" in text_lower:
-        print(f"AUTH_ERROR: {redacted.strip()}")
+        print(f"AUTH_ERROR: {clean_raw}")
         return 30
 
     # 2. Permanent Failure check (before checking ready!)
@@ -532,29 +555,34 @@ def cmd_parse_kaggle_status(status_output: str, exit_code_str: str) -> int:
     if "already exists" in text_lower or "directory already exists" in text_lower or \
        re.search(r'\b(failed|error|datasetfailed)\b', text_lower) or \
        re.search(r'dataset (creation|version creation) error', text_lower):
-        print(f"FAILED: {redacted.strip()}")
+        print(f"FAILED: {clean_raw}")
         return 20
 
-    # If exit code was nonzero:
+    # 3. If exit code was nonzero: CAN NEVER BE READY!
     if exit_code != 0:
         if re.search(r'\b(timeout|timed out|connection reset|temporarily unavailable|500|502|503|504)\b', text_lower):
-            print(f"TRANSIENT_ERROR: {redacted.strip()}")
+            print(f"TRANSIENT_ERROR: {clean_raw}")
             return 50
-        print(f"FAILED: {redacted.strip()}")
+        print(f"FAILED: {clean_raw}")
         return 20
 
-    # 3. Confirmed READY (exact word boundary \bready\b)
+    # 4. Negation of ready (e.g. "dataset is not ready", "not yet ready", "unready")
+    if re.search(r'\b(not\s+ready|not\s+yet\s+ready|unready|never\s+ready)\b', text_lower):
+        print("PROCESSING")
+        return 10
+
+    # 5. Confirmed READY (exact word boundary \bready\b, exit_code == 0, and not negated)
     if re.search(r'\bready\b', text_lower) and "already" not in text_lower:
         print("READY")
         return 0
 
-    # 4. In-progress / Pending / Processing
+    # 6. In-progress / Pending / Processing
     if re.search(r'\b(pending|processing|processed|queued|creating|uploading)\b', text_lower) or "being processed" in text_lower:
         print("PROCESSING")
         return 10
 
-    # 5. Unknown response
-    print(f"UNKNOWN: {redacted.strip()}")
+    # 7. Unknown response
+    print(f"UNKNOWN: {clean_raw}")
     return 40
 
 

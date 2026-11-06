@@ -91,7 +91,17 @@ class Syk4yRegressionSuite(unittest.TestCase):
         art_dir.mkdir(parents=True)
         # No dataset-metadata.json inside art_dir
 
-        env = {"KAGGLE_USERNAME": "usr", "KAGGLE_KEY": "key"}
+        bin_dir = self.tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        fake_kaggle = bin_dir / "kaggle"
+        fake_kaggle.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_kaggle.chmod(0o755)
+
+        env = {
+            "KAGGLE_BIN": str(fake_kaggle),
+            "KAGGLE_USERNAME": "usr",
+            "KAGGLE_KEY": "key",
+        }
         p = self.run_cmd([str(SYK4Y_BIN), "kaggle", "upload", "models"], cwd=str(project), env=env)
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("missing required metadata file", p.stderr.lower())
@@ -105,7 +115,17 @@ class Syk4yRegressionSuite(unittest.TestCase):
         art_dir.mkdir(parents=True)
         (art_dir / "dataset-metadata.json").write_text("{broken json...", encoding="utf-8")
 
-        env = {"KAGGLE_USERNAME": "usr", "KAGGLE_KEY": "key"}
+        bin_dir = self.tmp_path / "bin2"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        fake_kaggle = bin_dir / "kaggle"
+        fake_kaggle.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_kaggle.chmod(0o755)
+
+        env = {
+            "KAGGLE_BIN": str(fake_kaggle),
+            "KAGGLE_USERNAME": "usr",
+            "KAGGLE_KEY": "key",
+        }
         p = self.run_cmd([str(SYK4Y_BIN), "kaggle", "upload", "models"], cwd=str(project), env=env)
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("invalid or corrupt", p.stderr.lower())

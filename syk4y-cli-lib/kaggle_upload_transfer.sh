@@ -156,12 +156,12 @@ verify_kaggle_dataset_status() {
       # FAILED
       echo "Error: Kaggle dataset processing failed on server for '$dataset_ref'." >&2
       echo "Server response: $parse_out" >&2
-      return 1
+      return 20
     elif [[ "$parse_code" -eq 30 ]]; then
       # AUTH_ERROR
       echo "Error: Authentication / authorization failed for Kaggle dataset '$dataset_ref'." >&2
       echo "Server response: $parse_out" >&2
-      return 1
+      return 30
     else
       # UNKNOWN or other
       echo "Warning: Unrecognized status response from Kaggle: $parse_out" >&2
@@ -176,7 +176,7 @@ verify_kaggle_dataset_status() {
   fi
 
   echo "Error: Could not verify Kaggle dataset status for '$dataset_ref' (result: $parse_out)." >&2
-  return 1
+  return 40
 }
 
 compute_artifact_fingerprint() {
@@ -221,13 +221,25 @@ upload_single_artifact() {
         --source-fp "$prev_source_fp" \
         --dataset-ref "$dataset_ref"
       prev_status="READY"
-    elif [[ "$reconcile_status" -eq 1 ]]; then
-      echo "Previous remote processing failed on Kaggle. Proceeding with fresh upload..."
+    elif [[ "$reconcile_status" -eq 10 ]]; then
+      echo "Remote dataset '$dataset_ref' is still PROCESSING on Kaggle."
+      echo "Preserving pending PROCESSING state. Refusing duplicate upload while remote ingestion is active."
+      return 0
+    elif [[ "$reconcile_status" -eq 20 || "$reconcile_status" -eq 1 ]]; then
+      echo "Previous remote processing failed on Kaggle ($dataset_ref)."
       "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" set-artifact-state \
         "$STATE_FILE" "$artifact_id" "PROCESSING_FAILED" \
         --source-fp "$prev_source_fp" \
         --dataset-ref "$dataset_ref"
       prev_status="PROCESSING_FAILED"
+      if [[ "$FORCE_UPLOAD" -eq 0 ]]; then
+        echo "Previous upload processing failed on Kaggle. Use --force to explicitly trigger a fresh upload." >&2
+        return 1
+      fi
+    else
+      echo "Remote status for '$dataset_ref' is UNKNOWN or verification failed (code $reconcile_status)." >&2
+      echo "Blocking automatic upload to prevent duplicate versions or race conditions." >&2
+      return 1
     fi
   fi
 
@@ -375,18 +387,24 @@ upload_single_artifact() {
         --source-fp "$current_source_fp" \
         --dataset-ref "$dataset_ref"
       echo "Uploaded artifact source path: $source_path"
+      echo "Artifact '$artifact_id' status: READY"
     elif [[ "$verify_res" -eq 10 ]]; then
       # Remote ingestion still pending (polling timed out)
       echo "Dataset upload accepted by Kaggle. Remote ingestion is currently PROCESSING."
+      echo "Artifact '$artifact_id' status: PROCESSING"
       echo "Local state recorded as PROCESSING. Future invocations will reconcile automatically."
       upload_status=0
     else
-      # Failed on Kaggle
+      # Failed on Kaggle or UNKNOWN
+      local final_state="PROCESSING_FAILED"
+      if [[ "$verify_res" -ge 40 ]]; then
+        final_state="UNKNOWN"
+      fi
       "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" set-artifact-state \
-        "$STATE_FILE" "$artifact_id" "PROCESSING_FAILED" \
+        "$STATE_FILE" "$artifact_id" "$final_state" \
         --source-fp "$current_source_fp" \
         --dataset-ref "$dataset_ref"
-      echo "Error: Remote Kaggle dataset creation/update failed processing for '$dataset_ref'." >&2
+      echo "Error: Remote Kaggle dataset creation/update failed processing for '$dataset_ref' (final state: $final_state)." >&2
       upload_status=1
     fi
   fi
@@ -510,9 +528,23 @@ kaggle_upload_run_flow() {
     return "$failed_upload_status"
   fi
 
+  local any_processing=0
+  for artifact_id in "${ARTIFACT_IDS[@]}"; do
+    local art_st
+    art_st="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" get-artifact-state "$STATE_FILE" "$artifact_id")"
+    if [[ "$art_st" == *"\"status\": \"PROCESSING\""* ]]; then
+      any_processing=1
+    fi
+  done
+
   if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
     write_state_file
-    echo "Done uploading artifact datasets."
+    if [[ "$any_processing" -eq 1 ]]; then
+      echo "Artifact upload accepted: remote processing is currently PROCESSING (polling timeout)."
+      echo "Run 'syk4y kaggle upload' again once remote processing finishes to confirm synchronization."
+    else
+      echo "Done uploading artifact datasets: READY."
+    fi
   else
     echo "Dry-run complete. No datasets were uploaded."
   fi

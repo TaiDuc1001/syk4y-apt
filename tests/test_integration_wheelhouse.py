@@ -11,6 +11,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SYK4Y_BIN = REPO_ROOT / "syk4y"
 
 
+def is_docker_available() -> bool:
+    if not shutil.which("docker"):
+        return False
+    try:
+        res = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
 @contextlib.contextmanager
 def safe_temp_dir():
     # Create temp dir under REPO_ROOT/tests/tmp/ to ensure it's always in the workspace
@@ -22,14 +32,27 @@ def safe_temp_dir():
     try:
         yield tmp_path
     finally:
-        # 1. Clean up root-owned files using Docker (fallback just in case)
-        subprocess.run([
-            "docker", "run", "--rm",
-            "-v", f"{tmp_path.resolve()}:/workspace",
-            "alpine", "rm", "-rf", "/workspace/.syk4y-temp", "/workspace/kaggle_upload", "/workspace/.venv"
-        ], capture_output=True)
-        # 2. Clean up using shutil.rmtree, ignoring permissions or locked file errors
-        shutil.rmtree(tmp_path, ignore_errors=True)
+        # 1. Clean up root-owned files using Docker only if docker daemon is running
+        if is_docker_available():
+            try:
+                subprocess.run([
+                    "docker", "run", "--rm",
+                    "-v", f"{tmp_path.resolve()}:/workspace",
+                    "alpine", "rm", "-rf", "/workspace/.syk4y-temp", "/workspace/kaggle_upload", "/workspace/.venv"
+                ], capture_output=True, timeout=15)
+            except Exception:
+                pass
+
+        # 2. Python-native cleanup: ignore errors and unlock if needed
+        def _handle_remove_readonly(func, path, exc):
+            try:
+                if not os.path.islink(path):
+                    os.chmod(path, 0o777)
+                func(path)
+            except Exception:
+                pass
+
+        shutil.rmtree(tmp_path, onerror=_handle_remove_readonly, ignore_errors=True)
 
 
 class IntegrationWheelhouseTests(unittest.TestCase):
@@ -199,7 +222,7 @@ six = { index = "pypi-custom" }
             self.verify_wheelhouse_zip_strict(zip_paths[0], {"six": "1.17.0"})
 
     def test_cross_arch_build(self):
-        if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+        if not is_docker_available():
             self.skipTest("Docker daemon not running; cross-architecture build requires Docker")
         with safe_temp_dir() as tmp_path:
             subprocess.run(["uv", "init", "--no-workspace", "--name", "app"], cwd=tmp_path, check=True)
@@ -223,7 +246,7 @@ six = { index = "pypi-custom" }
             self.verify_wheelhouse_zip_strict(zip_paths[0], expected)
 
     def test_deprecated_wheel_arch_warning(self):
-        if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+        if not is_docker_available():
             self.skipTest("Docker daemon not running; cross-architecture build requires Docker")
         with safe_temp_dir() as tmp_path:
             subprocess.run(["uv", "init", "--no-workspace", "--name", "app"], cwd=tmp_path, check=True)

@@ -33,6 +33,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.5.29"
+          enable-cache: false
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install kaggle
+
       - name: Install bash 4+
         run: brew install bash
 
@@ -44,7 +56,7 @@ jobs:
       - name: Run test suite
         shell: bash
         run: |
-          python3 -m unittest discover -s tests -v
+          python -m unittest discover -s tests -v
 
   build-macos:
     needs: [test]
