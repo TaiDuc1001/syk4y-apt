@@ -1,6 +1,8 @@
 # Wheelhouse build pipeline for `syk4y kaggle upload`.
 
 # shellcheck source=/dev/null
+source "${SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}/syk4y-cli-lib/fs_utils.sh"
+# shellcheck source=/dev/null
 source "${SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}/syk4y-cli-lib/kaggle_upload_env.sh"
 
 build_wheelhouse_if_needed() {
@@ -176,7 +178,7 @@ build_wheelhouse_if_needed() {
 
       if [[ "${#PIP_REQ_ITEMS[@]}" -gt 0 ]]; then
         local host_failed_reqs_file
-        host_failed_reqs_file="$(mktemp "$temp_dir/host-failed.XXXXXX.txt")"
+        host_failed_reqs_file="$(syk4y_mktemp "$temp_dir" "host-failed")"
         export HOST_FAILED_REQS_FILE="$host_failed_reqs_file"
         
         local -a extra_index_args
@@ -236,7 +238,7 @@ build_wheelhouse_if_needed() {
         fi
 
         local docker_err
-        docker_err="$(mktemp "/tmp/docker-build-error.XXXXXX.log")"
+        docker_err="$(syk4y_mktemp "$temp_dir" "docker-build-error")"
         if ! docker run --rm \
           --user "$(id -u):$(id -g)" \
           --platform "$docker_platform" \
@@ -256,7 +258,7 @@ build_wheelhouse_if_needed() {
           err_msg="$(cat "$docker_err")"
           echo "$err_msg" >&2
           rm -f "$docker_err"
-          rm -rf "$temp_dir"
+          rm -f "$host_req_out" "$full_req_backup"
           
           if [[ "$err_msg" == *"exec format error"* ]]; then
             local install_arch="$target_norm"
@@ -310,20 +312,23 @@ build_wheelhouse_if_needed() {
   local build_dir wheelhouse_tmp_zip req_out req_sanitized_out failed_reqs_file
   local requirements_source uv_lock_path
   local req local_wheel_path
+  local temp_dir="${REPO_ROOT:-$(pwd)}/.syk4y-temp"
+  mkdir -p "$temp_dir" 2>/dev/null || temp_dir="${TMPDIR:-/tmp}"
+
   if [[ -n "${OVERRIDE_BUILD_DIR:-}" ]]; then
     build_dir="$OVERRIDE_BUILD_DIR"
     mkdir -p "$build_dir"
   else
-    build_dir="$(mktemp -d "/tmp/wheelhouse-build.XXXXXX")"
+    build_dir="$(syk4y_mktemp_dir "$temp_dir" "wheelhouse-build")"
   fi
-  wheelhouse_tmp_zip="$(mktemp "/tmp/wheelhouse-archive.XXXXXX.zip")"
+  wheelhouse_tmp_zip="$(syk4y_mktemp "$temp_dir" "wheelhouse-archive")"
   req_out="$build_dir/_requirements.txt"
   req_sanitized_out="$build_dir/_requirements_sanitized.txt"
-  failed_reqs_file="$(mktemp "/tmp/wheelhouse-failed.XXXXXX.txt")"
+  failed_reqs_file="$(syk4y_mktemp "$temp_dir" "wheelhouse-failed")"
   uv_lock_path="$REPO_ROOT/uv.lock"
   cleanup_wheel_tmp() {
     if [[ -z "${OVERRIDE_BUILD_DIR:-}" ]]; then
-      rm -rf "$build_dir"
+      syk4y_safe_rm_rf "$build_dir" "$temp_dir"
     fi
     rm -f "$wheelhouse_tmp_zip"
     rm -f "$failed_reqs_file"
@@ -396,7 +401,9 @@ build_wheelhouse_if_needed() {
   # EXTRA_INDEXES parsed at the top of the function
 
   WHEELHOUSE_INPUT_HASH="$({
-    "$WHEELHOUSE_PYTHON" -V 2>&1
+    "$WHEELHOUSE_PYTHON" -c "import sys, platform; print(platform.python_implementation(), sys.version, getattr(sys, 'abiflags', ''))" 2>&1
+    printf 'arch=%s\n' "${WHEEL_ARCH:-native}"
+    printf 'target_platform=%s\n' "$(uname -s)-$(uname -m)"
     printf 'requirements-source=%s\n' "$requirements_source"
     cat "$req_out"
     while IFS= read -r req; do
@@ -408,21 +415,31 @@ build_wheelhouse_if_needed() {
       fi
       if [[ -f "$local_wheel_path" ]]; then
         printf 'local-wheel=%s\n' "$req"
-        sha256sum "$local_wheel_path"
+        syk4y_sha256 "$local_wheel_path"
       fi
     done < "$req_out"
     printf '%s\n' "${EXTRA_INDEXES[@]}"
+    printf 'zip-mode=%s\n' "$WHEELHOUSE_ZIP_MODE"
     if [[ "$requirements_source" == "uv.lock" ]]; then
       uv --version
-      sha256sum "$uv_lock_path"
+      syk4y_sha256 "$uv_lock_path"
     fi
-  } | sha256sum | awk '{print $1}')"
+  } | syk4y_sha256)"
 
-  if [[ -f "$WHEELHOUSE_PATH" ]] && [[ -n "$prev_input_hash" ]] && [[ "$prev_input_hash" == "$WHEELHOUSE_INPUT_HASH" ]]; then
-    echo "wheelhouse.zip is up-to-date (dependency snapshot unchanged)."
-    trap - RETURN
-    cleanup_wheel_tmp
-    return
+  if [[ -f "$WHEELHOUSE_PATH" ]]; then
+    # Validate archive integrity before reusing
+    if "$PYTHON_BIN" -c "import zipfile, sys; sys.exit(0 if zipfile.ZipFile(sys.argv[1]).testzip() is None else 1)" "$WHEELHOUSE_PATH" 2>/dev/null; then
+      if [[ -n "$prev_input_hash" ]] && [[ "$prev_input_hash" == "$WHEELHOUSE_INPUT_HASH" ]]; then
+        echo "Cached wheelhouse reused: $WHEELHOUSE_PATH (wheelhouse.zip is up-to-date; dependency snapshot unchanged)."
+        trap - RETURN
+        cleanup_wheel_tmp
+        return
+      fi
+    else
+      echo "Wheelhouse missing or invalid: archive at '$WHEELHOUSE_PATH' is corrupt or incomplete. Rebuilding..."
+    fi
+  else
+    echo "Wheelhouse missing or invalid: '$WHEELHOUSE_PATH' not found. Building..."
   fi
 
   mapfile -t REQ_ITEMS < <(
@@ -515,14 +532,14 @@ build_wheelhouse_if_needed() {
 
   mkdir -p "$WHEELHOUSE_DATASET_DIR"
   if [[ -f "$WHEELHOUSE_PATH" ]] && cmp -s "$wheelhouse_tmp_zip" "$WHEELHOUSE_PATH"; then
-    echo "wheelhouse.zip unchanged."
+    echo "Cached wheelhouse reused: $WHEELHOUSE_PATH (wheelhouse.zip unchanged; identical archive contents)."
     trap - RETURN
     cleanup_wheel_tmp
     return
   fi
 
   mv -f "$wheelhouse_tmp_zip" "$WHEELHOUSE_PATH"
-  echo "Updated wheelhouse archive: $WHEELHOUSE_PATH"
+  echo "Wheelhouse rebuilt: $WHEELHOUSE_PATH (Updated wheelhouse archive)."
   trap - RETURN
   cleanup_wheel_tmp
 }

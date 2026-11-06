@@ -67,6 +67,7 @@ REQUIRED_SCRIPTS=(
   syk4y-gen
   syk4y-kaggle
   syk4y-doctor
+  syk4y-migrate-layout
 )
 
 REQUIRED_DIRS=(
@@ -126,6 +127,7 @@ make_wrapper "syk4y-init" "syk4y-init"
 make_wrapper "syk4y-gen" "syk4y-gen"
 make_wrapper "syk4y-kaggle" "syk4y-kaggle"
 make_wrapper "syk4y-doctor" "syk4y-doctor"
+make_wrapper "syk4y-migrate-layout" "syk4y-migrate-layout"
 make_wrapper "make-gen-full-repo.sh" "syk4y-gen"
 
 INSTALLED_SIZE="$(du -sk "$PKG_DIR/usr" | awk '{print $1}')"

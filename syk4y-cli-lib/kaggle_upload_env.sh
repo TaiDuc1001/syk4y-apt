@@ -63,6 +63,11 @@ ensure_pip() {
 }
 
 resolve_kaggle_cmd() {
+  if [[ -n "${KAGGLE_BIN:-}" && -x "${KAGGLE_BIN}" ]]; then
+    KAGGLE_CMD=("$KAGGLE_BIN")
+    return 0
+  fi
+
   local python_path="$PYTHON_BIN"
   local python_kaggle=""
 
@@ -97,6 +102,12 @@ resolve_kaggle_cmd() {
     KAGGLE_CMD=(kaggle)
     return 0
   fi
+
+  # Check if python module can run kaggle CLI even if standalone executable is missing
+  if "$PYTHON_BIN" -c "import sys, kaggle; from kaggle.cli import main; sys.exit(0)" >/dev/null 2>&1; then
+    KAGGLE_CMD=("$PYTHON_BIN" "-c" "from kaggle.cli import main; import sys; sys.exit(main())")
+    return 0
+  fi
   return 1
 }
 
@@ -105,36 +116,16 @@ ensure_kaggle_cli() {
     return 0
   fi
 
-  echo "Kaggle CLI is missing. Attempting auto-install for: $PYTHON_BIN"
-
-  if command -v uv >/dev/null 2>&1; then
-    if uv pip install --python "$PYTHON_BIN" kaggle >/dev/null 2>&1; then
-      if resolve_kaggle_cmd; then
-        return 0
-      fi
-    fi
+  echo "Error: Kaggle CLI is not available in the current environment ($PYTHON_BIN)." >&2
+  echo "To install Kaggle CLI in your active environment, run:" >&2
+  if [[ -n "${CONDA_PREFIX:-}" ]]; then
+    echo "  conda install -c conda-forge kaggle" >&2
+    echo "  # or: pip install kaggle" >&2
+  elif command -v uv >/dev/null 2>&1; then
+    echo "  uv pip install --python \"$PYTHON_BIN\" kaggle" >&2
+  else
+    echo "  \"$PYTHON_BIN\" -m pip install kaggle" >&2
   fi
-
-  ensure_pip "$PYTHON_BIN"
-
-  if "$PYTHON_BIN" -m pip install --disable-pip-version-check kaggle >/dev/null 2>&1; then
-    if resolve_kaggle_cmd; then
-      return 0
-    fi
-  fi
-
-  if "$PYTHON_BIN" -m pip install --disable-pip-version-check --user kaggle >/dev/null 2>&1; then
-    if resolve_kaggle_cmd; then
-      return 0
-    fi
-  fi
-
-  echo "Error: Kaggle CLI is required for upload (either 'kaggle' on PATH or next to '$PYTHON_BIN')." >&2
-  echo "Auto-install attempt failed." >&2
-  if command -v uv >/dev/null 2>&1; then
-    echo "Try manually: uv pip install --python \"$PYTHON_BIN\" kaggle" >&2
-  fi
-  echo "Or: \"$PYTHON_BIN\" -m pip install --user kaggle" >&2
   exit 1
 }
 

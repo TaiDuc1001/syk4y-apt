@@ -11,6 +11,20 @@ Install one of:
 HINT
 }
 
+syk4y_detect_python_env_type() {
+  local py="${1:-python3}"
+  if [[ -n "${CONDA_PREFIX:-}" ]] && [[ "$py" == "$CONDA_PREFIX"* ]]; then
+    printf 'conda\n'
+    return 0
+  fi
+  if "$py" -c "import sys; sys.exit(0 if (hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)) else 1)" 2>/dev/null; then
+    printf 'venv\n'
+    return 0
+  fi
+  printf 'system\n'
+  return 0
+}
+
 syk4y_is_python_bin_usable() {
   local py="$1"
   if [[ -z "$py" ]]; then
@@ -78,6 +92,14 @@ syk4y_resolve_python_bin() {
   if [[ -n "$detected" ]]; then
     printf '%s\n' "$detected"
     return 0
+  fi
+
+  # Check active Conda environment
+  if [[ -n "${CONDA_PREFIX:-}" ]] && [[ -x "$CONDA_PREFIX/bin/python" ]]; then
+    if syk4y_is_python_bin_usable "$CONDA_PREFIX/bin/python"; then
+      printf '%s\n' "$CONDA_PREFIX/bin/python"
+      return 0
+    fi
   fi
 
   if command -v uv >/dev/null 2>&1; then

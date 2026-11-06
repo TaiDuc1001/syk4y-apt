@@ -1,5 +1,8 @@
 # Argument parsing and context initialization for `syk4y kaggle upload`.
 
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}/syk4y-cli-lib/project_root.sh"
+
 kaggle_upload_usage() {
   cat "$SCRIPT_DIR/templates/kaggle-upload-usage.txt"
 }
@@ -10,6 +13,7 @@ kaggle_upload_parse_args() {
   VERSION_MESSAGE_OVERRIDE=""
   DIR_MODE_OVERRIDE=""
   FORCE_UPLOAD_OVERRIDE=0
+  DRY_RUN_OVERRIDE=0
   BUILD_WHEEL_ONLY=0
   WHEEL_ARCH_OVERRIDE=""
   ARTIFACT_FILTERS=()
@@ -27,6 +31,10 @@ kaggle_upload_parse_args() {
         ;;
       --force)
         FORCE_UPLOAD_OVERRIDE=1
+        shift
+        ;;
+      --dry-run)
+        DRY_RUN_OVERRIDE=1
         shift
         ;;
       -m|--message)
@@ -125,20 +133,7 @@ kaggle_upload_parse_args() {
 }
 
 kaggle_upload_prepare_context() {
-  if [[ -n "$REPO_ROOT_OVERRIDE" ]]; then
-    if [[ "$REPO_ROOT_OVERRIDE" == /* ]]; then
-      REPO_ROOT="$REPO_ROOT_OVERRIDE"
-    else
-      REPO_ROOT="$(cd "$REPO_ROOT_OVERRIDE" && pwd)"
-    fi
-  else
-    REPO_ROOT="$(pwd)"
-  fi
-
-  if [[ ! -d "$REPO_ROOT" ]]; then
-    echo "Error: invalid repository root: '$REPO_ROOT'." >&2
-    exit 1
-  fi
+  REPO_ROOT="$(syk4y_resolve_project_root "$REPO_ROOT_OVERRIDE" "$(pwd)")"
 
   REPO_NAME="$(basename "$REPO_ROOT")"
   BASE_DATASET_SLUG="$(syk4y_slugify "$REPO_NAME")"
@@ -160,6 +155,7 @@ kaggle_upload_prepare_context() {
   WHEELHOUSE_INPUT_KEY="__wheelhouse_input__"
   WHEELHOUSE_INPUT_HASH=""
   FORCE_UPLOAD=0
+  DRY_RUN="${DRY_RUN_OVERRIDE:-0}"
   WHEEL_ARCH="${WHEEL_ARCH:-native}"
   if [[ -n "$WHEEL_ARCH_OVERRIDE" ]]; then
     WHEEL_ARCH="$WHEEL_ARCH_OVERRIDE"

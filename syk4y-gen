@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve real script directory even if invoked through symlink
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR_LINK="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR_LINK/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/project_root.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/fs_utils.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/python_env.sh"
 # shellcheck source=/dev/null
@@ -163,20 +175,7 @@ if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
   SELECTED_ARTIFACTS=("${normalized_artifacts[@]}")
 fi
 
-if [[ -n "$REPO_ROOT_OVERRIDE" ]]; then
-  if [[ "$REPO_ROOT_OVERRIDE" == /* ]]; then
-    REPO_ROOT="$REPO_ROOT_OVERRIDE"
-  else
-    REPO_ROOT="$(cd "$REPO_ROOT_OVERRIDE" && pwd)"
-  fi
-else
-  if [[ "$SKIP_GEN" -eq 1 ]]; then
-    REPO_ROOT="$(pwd)"
-  else
-    require_cmd git
-    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  fi
-fi
+REPO_ROOT="$(syk4y_resolve_project_root "$REPO_ROOT_OVERRIDE" "$(pwd)")"
 
 if [[ -z "$REPO_ROOT" ]] || [[ ! -d "$REPO_ROOT" ]]; then
   echo "Error: invalid repository root: '$REPO_ROOT'." >&2
@@ -241,11 +240,11 @@ if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
   echo "Initialized Kaggle upload folders:"
   echo "  upload root: $UPLOAD_ROOT_ABS"
 
-  # Clean legacy monolithic upload layout from older script versions.
+  # Clean legacy monolithic upload layout if present from older versions
   LEGACY_DATASET_DIR="$UPLOAD_ROOT_ABS/$REPO_SLUG"
-  if [[ -d "$LEGACY_DATASET_DIR" ]]; then
+  if [[ -d "$LEGACY_DATASET_DIR" ]] && [[ ! -f "$LEGACY_DATASET_DIR/dataset-metadata.json" ]]; then
     echo "  removed legacy folder: $LEGACY_DATASET_DIR"
-    rm -rf "$LEGACY_DATASET_DIR"
+    syk4y_safe_rm_rf "$LEGACY_DATASET_DIR" "$UPLOAD_ROOT_ABS"
   fi
 
   for artifact in "${SELECTED_ARTIFACTS[@]}"; do
@@ -260,8 +259,6 @@ if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
     echo "    dataset id: $dataset_id"
     echo "    dataset dir: $artifact_dir"
 
-    # Clean stale generated entries while keeping metadata file path stable.
-    find "$artifact_dir" -mindepth 1 -maxdepth 1 ! -name 'dataset-metadata.json' -exec rm -rf {} +
     artifact_source=""
     artifact_item_name=""
 

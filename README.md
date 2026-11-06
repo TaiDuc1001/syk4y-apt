@@ -33,6 +33,22 @@ If this is all you need, you can stop here.
 
 ## Install
 
+### No-sudo / HPC Source Installation (Linux & macOS)
+
+For unprivileged environments such as HPC clusters, GPU servers, or shared systems without `sudo` access:
+
+```bash
+git clone https://github.com/TaiDuc1001/syk4y-apt.git "$HOME/.local/share/syk4y"
+export PATH="$HOME/.local/share/syk4y:$PATH"
+
+# Persist in your shell profile (e.g., ~/.bashrc or ~/.zshrc):
+echo 'export PATH="$HOME/.local/share/syk4y:$PATH"' >> ~/.bashrc
+
+syk4y doctor
+```
+
+All scripts and libraries are self-contained and symlink-aware, requiring no root privileges or system package installs.
+
 ### apt (signed repository)
 
 ```bash
@@ -107,7 +123,23 @@ syk4y init checkpoints datasets models wheelhouse
 This creates `kaggle_upload/` layout and metadata for each artifact dataset.
 If `wheelhouse` is included, `wheelhouse.zip` is built/updated.
 
-### 2) Upload only what changed
+### 2) Pre-zip and validate artifacts locally
+
+Pre-zip directory artifacts locally before upload:
+
+```bash
+syk4y kaggle zip
+syk4y kaggle zip datasets
+```
+
+Validate artifact metadata and archives locally (offline, fail-fast check):
+
+```bash
+syk4y kaggle validate
+syk4y kaggle validate datasets wheelhouse
+```
+
+### 3) Upload only what changed
 
 ```bash
 syk4y kaggle upload
@@ -128,7 +160,7 @@ syk4y kaggle upload --message "weekly refresh"
 syk4y kaggle upload --dir-mode zip
 ```
 
-### 3) Build wheelhouse only (no Kaggle auth required)
+### 4) Build wheelhouse only (no Kaggle auth required)
 
 ```bash
 syk4y kaggle upload --build-wheel-only
@@ -169,6 +201,20 @@ To generate snapshot and initialize artifact folders together:
 syk4y gen -a checkpoints -a datasets -a models -a wheelhouse
 ```
 
+### 6) Fix accidental nested layouts (Non-destructive)
+
+If an older version accidentally created a nested `kaggle_upload/kaggle_upload/` directory:
+
+```bash
+# Preview what will be moved and verified (dry-run):
+syk4y migrate-layout --dry-run
+
+# Perform safe migration:
+syk4y migrate-layout
+```
+
+This verifies archive checksums, preserves your pre-built `wheelhouse.zip` and Kaggle dataset IDs, merges upload state, and retains a timestamped backup of the legacy directory without deleting data.
+
 ## Command Cheat Sheet
 
 ### Top-level
@@ -182,6 +228,7 @@ Commands:
 - `gen` generate snapshot script (`gen-full.py`)
 - `kaggle` Kaggle helpers and multi-account tools
 - `doctor` environment/readiness checks
+- `migrate-layout` safely migrate legacy nested layouts (`kaggle_upload/kaggle_upload`)
 
 ### `syk4y init`
 
@@ -225,6 +272,14 @@ Subcommands:
 syk4y doctor [--repo-root DIR] [--json]
 ```
 
+Outputs human-readable tabular diagnostics or structured JSON when invoked with `--json`.
+
+### `syk4y migrate-layout`
+
+```bash
+syk4y migrate-layout [--repo-root DIR] [--dry-run]
+```
+
 ## Troubleshooting
 
 ### 1) "Kaggle credentials are not configured"
@@ -249,7 +304,16 @@ uv pip install kaggle
 
 Then rerun command in the same repo.
 
-### 3) Upload says nothing changed
+### 3) Anaconda / HPC Warning: `libtinfo.so.6: no version information available (required by bash)`
+
+This warning occurs when an Anaconda environment's `lib` directory is placed globally on `LD_LIBRARY_PATH` (e.g. `export LD_LIBRARY_PATH=/share/apps/anaconda/.../lib:$LD_LIBRARY_PATH`). System `bash` finds Anaconda's `libtinfo.so.6` which lacks Debian/RHEL symbol versioning tags.
+
+**Key points:**
+- It is a non-fatal linker warning and does **not** corrupt execution or exit with failure.
+- `syk4y` detects this condition in `syk4y doctor` and classifies it as non-fatal.
+- **Recommended fix on HPC**: Do not put Anaconda's global `lib/` directory in `LD_LIBRARY_PATH` in `~/.bashrc`. Instead, activate the Conda environment properly using `conda activate <env>`, which sets paths appropriately without clobbering system library resolution for Bash. Do not globally unset `LD_LIBRARY_PATH` without verifying CUDA library requirements.
+
+### 4) Upload says nothing changed
 
 This is expected change detection behavior.
 

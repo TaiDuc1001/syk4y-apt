@@ -16,201 +16,321 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 
-def _parallel_pack_zip(output_zip: Path, files_to_compress, compression, mode="w"):
-    import warnings
-    warnings.filterwarnings("ignore", category=UserWarning, message="Duplicate name:")
+import hashlib
+import uuid
 
-    class ParallelZipFile(zipfile.ZipFile):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._pre_compressed_map = {}
 
-        def set_pre_compressed(self, filename, compressed_data, uncompressed_size, crc):
-            self._pre_compressed_map[filename] = (compressed_data, uncompressed_size, crc)
+def print_progress(current, total, prefix="Zipping", suffix="", bar_length=30):
+    if total == 0:
+        return
+    percent = float(current) * 100 / total
+    filled_length = int(round(bar_length * current / total))
+    bar = "█" * filled_length + "-" * (bar_length - filled_length)
+    sys.stderr.write(f"\r{prefix} |{bar}| {percent:.1f}% ({current}/{total}) {suffix}\033[K")
+    sys.stderr.flush()
 
-        def _open_to_write(self, zinfo, force_zip64=False):
-            write_file = super()._open_to_write(zinfo, force_zip64=force_zip64)
-            filename = zinfo.filename
-            if filename in self._pre_compressed_map:
-                comp_data, unc_size, crc = self._pre_compressed_map[filename]
-                
-                def custom_write(data):
-                    if write_file.closed:
-                        raise ValueError("I/O operation on closed file.")
-                    if write_file._file_size == 0:
-                        write_file._file_size = unc_size
-                        write_file._crc = crc
-                        write_file._compress_size = len(comp_data)
-                        write_file._fileobj.write(comp_data)
-                    return len(data)
-                    
-                def custom_close():
-                    if write_file.closed:
-                        return
-                    try:
-                        super(zipfile._ZipWriteFile, write_file).close()
-                        write_file._zinfo.compress_size = write_file._compress_size
-                        write_file._zinfo.CRC = write_file._crc
-                        write_file._zinfo.file_size = write_file._file_size
-                        
-                        if write_file._zinfo.flag_bits & 0x08:
-                            import struct
-                            fmt = "<LLQQ" if write_file._zip64 else "<LLLL"
-                            write_file._fileobj.write(struct.pack(fmt, zipfile._DD_SIGNATURE, write_file._zinfo.CRC,
-                                write_file._zinfo.compress_size, write_file._zinfo.file_size))
-                            write_file._zipfile.start_dir = write_file._fileobj.tell()
-                        else:
-                            write_file._zipfile.start_dir = write_file._fileobj.tell()
-                            write_file._fileobj.seek(write_file._zinfo.header_offset)
-                            write_file._fileobj.write(write_file._zinfo.FileHeader(write_file._zip64))
-                            write_file._fileobj.seek(write_file._zipfile.start_dir)
 
-                        write_file._zipfile.filelist.append(write_file._zinfo)
-                        write_file._zipfile.NameToInfo[write_file._zinfo.filename] = write_file._zinfo
-                    finally:
-                        write_file._zipfile._writing = False
-                        
-                write_file.write = custom_write
-                write_file.close = custom_close
-                write_file._compressor = None
-                
-            return write_file
+def _normalize_archive_relpath(rel_path: str) -> str:
+    clean = rel_path.replace("\\", "/").strip()
+    clean = clean.lstrip("/")
+    parts = [p for p in clean.split("/") if p and p != "."]
+    if any(p == ".." for p in parts):
+        raise ValueError(f"Directory traversal ('..') detected in archive path: {rel_path!r}")
+    if ":" in parts[0] and len(parts[0]) == 2:
+        raise ValueError(f"Drive letter detected in archive path: {rel_path!r}")
+    return "/".join(parts)
 
-    def print_progress(current, total, prefix="Zipping", suffix="", bar_length=30):
-        if total == 0:
-            return
-        percent = float(current) * 100 / total
-        filled_length = int(round(bar_length * current / total))
-        bar = "█" * filled_length + "-" * (bar_length - filled_length)
-        sys.stderr.write(f"\r{prefix} |{bar}| {percent:.1f}% ({current}/{total}) {suffix}\033[K")
-        sys.stderr.flush()
 
-    MAX_PARALLEL_FILE_SIZE = 16 * 1024 * 1024  # 16MB
-    
-    parallel_jobs = []
-    sequential_files = []
-    
-    for path, rel, ext_attr in files_to_compress:
-        if path is None:
-            sequential_files.append((None, rel, ext_attr))
-            continue
-        try:
-            st = path.stat()
-            size = st.st_size
-        except OSError:
-            continue
-            
-        if size < MAX_PARALLEL_FILE_SIZE and compression == zipfile.ZIP_DEFLATED:
-            parallel_jobs.append((path, rel, ext_attr))
-        else:
-            sequential_files.append((path, rel, ext_attr))
-
-    pre_compressed_map = {}
-    
-    if parallel_jobs:
-        def compress_worker(job):
-            p, r, _ = job
+def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
+    source_dir = source_dir.resolve()
+    exclude_realpaths = set()
+    if exclude_paths:
+        for p in exclude_paths:
             try:
-                data = p.read_bytes()
-                crc = binascii.crc32(data) & 0xffffffff
-                compressor = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
-                c_data = compressor.compress(data) + compressor.flush()
-                return r, c_data, len(data), crc
-            except Exception as e:
-                print(f"Warning: failed to read/compress {p}: {e}", file=sys.stderr)
-                return r, None, 0, 0
+                exclude_realpaths.add(Path(p).resolve())
+            except OSError:
+                pass
 
-        max_workers = min(32, (os.cpu_count() or 4) * 2)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(compress_worker, job): job for job in parallel_jobs}
-            total_jobs = len(parallel_jobs)
-            completed_jobs = 0
-            
-            print_progress(0, total_jobs, prefix="Compressing", suffix="")
-            
-            for future in concurrent.futures.as_completed(futures):
-                r, c_data, unc_size, crc = future.result()
-                if c_data is not None:
-                    pre_compressed_map[r] = (c_data, unc_size, crc)
-                completed_jobs += 1
-                filename = futures[future][1]
-                if len(filename) > 30:
-                    filename = "..." + filename[-27:]
-                print_progress(completed_jobs, total_jobs, prefix="Compressing", suffix=filename)
-            
-            print_progress(total_jobs, total_jobs, prefix="Compressing", suffix="Done!")
-            sys.stderr.write("\n")
-            sys.stderr.flush()
+    visited_real_dirs = set()
+    all_files = []  # list of (abs_path, norm_rel, ext_attr, size)
+    populated_dirs = set()  # set of norm_rel dir paths that contain files
+    empty_dirs = set()  # set of norm_rel dir paths with no files
+    seen_rel_paths = set()
 
-    total_files = len(files_to_compress)
+    def walk_dir(current_dir: Path, rel_prefix: str):
+        try:
+            st = current_dir.stat()
+        except OSError as exc:
+            print(f"Warning: unable to stat directory '{current_dir}': {exc}", file=sys.stderr)
+            return None
+
+        dir_key = (st.st_dev, st.st_ino)
+        if dir_key in visited_real_dirs:
+            # Prevent circular symlinks or duplicated traversal of same directory
+            return None
+        visited_real_dirs.add(dir_key)
+
+        try:
+            # Prefer real directories before symlinks to avoid recording alias paths
+            entries = sorted(os.scandir(current_dir), key=lambda e: (e.is_symlink(), e.name))
+        except OSError as exc:
+            print(f"Warning: unable to read directory '{current_dir}': {exc}", file=sys.stderr)
+            return None
+
+        has_child_file = False
+
+        for entry in entries:
+            name = entry.name
+            if name in {".syk4y-temp", ".upload.lock"} or name.startswith(".syk4y-"):
+                continue
+
+            entry_path = Path(entry.path)
+            try:
+                if entry_path.resolve() in exclude_realpaths:
+                    continue
+            except OSError:
+                pass
+
+            rel_path = f"{rel_prefix}/{name}" if rel_prefix else name
+            norm_rel = _normalize_archive_relpath(rel_path)
+
+            try:
+                is_dir = entry.is_dir(follow_symlinks=True)
+            except OSError:
+                continue
+
+            if is_dir:
+                child_status = walk_dir(entry_path, norm_rel)
+                if child_status is True:
+                    has_child_file = True
+                elif child_status is False:
+                    empty_dirs.add(norm_rel)
+            else:
+                try:
+                    fst = entry.stat(follow_symlinks=True)
+                    ext_attr = (fst.st_mode & 0xFFFF) << 16
+                    size = fst.st_size
+                except OSError:
+                    continue
+
+                if norm_rel in seen_rel_paths:
+                    raise ValueError(f"Duplicate archive path detected: {norm_rel!r}")
+                seen_rel_paths.add(norm_rel)
+
+                all_files.append((entry_path, norm_rel, ext_attr, size))
+                has_child_file = True
+
+                # Mark all parent directories of this file as populated
+                parent = norm_rel
+                while "/" in parent:
+                    parent = parent.rsplit("/", 1)[0]
+                    populated_dirs.add(parent)
+
+        return has_child_file
+
+    walk_dir(source_dir, "")
+
+    # Prune any empty dirs that turned out to be ancestors of populated dirs
+    pure_empty_dirs = {d for d in empty_dirs if d not in populated_dirs}
+
+    # Check for file/directory name collisions
+    for _, norm_rel, _, _ in all_files:
+        if norm_rel in populated_dirs or norm_rel in pure_empty_dirs:
+            raise ValueError(f"File/directory collision: {norm_rel!r} is both a file and a directory prefix")
+
+    return all_files, pure_empty_dirs
+
+
+def validate_zip_archive(zip_path: Path) -> dict:
+    zip_path = Path(zip_path)
+    if not zip_path.is_file():
+        raise ValueError(f"ZIP archive does not exist: {zip_path}")
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError(f"Corrupt or invalid ZIP archive: {zip_path}")
+
+    seen_names = set()
+    dir_entries = set()
+    file_entries = set()
+    populated_prefixes = set()
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        bad_file = zf.testzip()
+        if bad_file is not None:
+            raise ValueError(f"ZIP CRC checksum failed on entry: {bad_file!r}")
+
+        for info in zf.infolist():
+            raw_name = info.filename
+
+            if raw_name in seen_names:
+                raise ValueError(f"Duplicate entry found in ZIP: {raw_name!r}")
+            seen_names.add(raw_name)
+
+            if raw_name.startswith("/") or raw_name.startswith("\\"):
+                raise ValueError(f"Absolute path in ZIP entry: {raw_name!r}")
+            if any(seg == ".." for seg in raw_name.replace("\\", "/").split("/")):
+                raise ValueError(f"Directory traversal ('..') in ZIP entry: {raw_name!r}")
+
+            norm_name = _normalize_archive_relpath(raw_name)
+
+            if info.is_dir():
+                clean_dir = norm_name.rstrip("/")
+                dir_entries.add(clean_dir)
+            else:
+                file_entries.add(norm_name)
+                parent = norm_name
+                while "/" in parent:
+                    parent = parent.rsplit("/", 1)[0]
+                    populated_prefixes.add(parent)
+
+        conflicts = dir_entries & file_entries
+        if conflicts:
+            raise ValueError(f"File/directory collision detected in archive: {sorted(conflicts)}")
+
+        redundant_dirs = dir_entries & populated_prefixes
+        if redundant_dirs:
+            raise ValueError(
+                f"Conflicting redundant directory entry declared for populated path: {sorted(redundant_dirs)}. "
+                f"Populated directories must not have separate directory entries to prevent Kaggle ingestion collision."
+            )
+
+    return {
+        "total_entries": len(seen_names),
+        "file_entries": len(file_entries),
+        "dir_entries": len(dir_entries),
+    }
+
+
+def _compute_source_fingerprint(source_dir: Path, exclude_paths=None) -> str:
+    all_files, empty_dirs = _safe_walk_artifact_dir(source_dir, exclude_paths=exclude_paths)
+    all_files.sort(key=lambda x: x[1])
+    empty_dirs_sorted = sorted(empty_dirs)
+
+    h = hashlib.sha256()
+    h.update(b"V2_SAFE_ZIP_FP\0")
+    for d in empty_dirs_sorted:
+        h.update(f"D:{d}\0".encode())
+    for p, rel, _, size in all_files:
+        try:
+            mtime_ns = p.stat().st_mtime_ns
+            h.update(f"F:{rel}:{size}:{mtime_ns}\0".encode())
+        except OSError:
+            h.update(f"F:{rel}:{size}\0".encode())
+    return h.hexdigest()
+
+
+def _safe_pack_zip(output_zip: Path, all_files, empty_dirs, zip_mode: str, source_dir: Path):
+    output_zip = Path(output_zip).resolve()
+    output_zip.parent.mkdir(parents=True, exist_ok=True)
+
+    mode = (zip_mode or "store").strip().lower()
+    default_compression = zipfile.ZIP_STORED if mode == "store" else zipfile.ZIP_DEFLATED
+
+    ALREADY_COMPRESSED_EXTS = {
+        ".jpg", ".jpeg", ".png", ".webp", ".gif",
+        ".mp4", ".avi", ".mkv", ".mov",
+        ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".tgz",
+        ".whl", ".pt", ".pth", ".bin", ".onnx", ".h5", ".safetensors",
+    }
+
+    all_files.sort(key=lambda x: x[1])
+    empty_dirs_sorted = sorted(empty_dirs)
+
+    temp_zip = output_zip.parent / f"{output_zip.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+
+    total_files = len(all_files)
     written_files = 0
-    
+    total_bytes = sum(size for _, _, _, size in all_files)
+    max_mtime_ns = 0
+
+    fingerprint_hasher = hashlib.sha256()
+    fingerprint_hasher.update(b"V2_SAFE_ZIP_FP\0")
+
     print_progress(0, total_files, prefix="Writing zip", suffix="")
 
-    with ParallelZipFile(output_zip, mode=mode, compression=compression) as zf:
-        for r, val in pre_compressed_map.items():
-            zf.set_pre_compressed(r, val[0], val[1], val[2])
-            
-        for path, rel, ext_attr in files_to_compress:
-            info = zipfile.ZipInfo(rel)
-            info.date_time = (1980, 1, 1, 0, 0, 0)
-            info.compress_type = compression
-            info.create_system = 3
-            info.external_attr = ext_attr
-            
-            filename = rel
-            if len(filename) > 30:
-                filename = "..." + filename[-27:]
-            print_progress(written_files, total_files, prefix="Writing zip", suffix=filename)
-
-            if rel in pre_compressed_map:
+    try:
+        with zipfile.ZipFile(temp_zip, "w", default_compression) as zf:
+            # 1. Write pure empty directories (if any)
+            for d in empty_dirs_sorted:
+                d_name = d.rstrip("/") + "/"
+                info = zipfile.ZipInfo(d_name)
+                info.date_time = (1980, 1, 1, 0, 0, 0)
+                info.compress_type = zipfile.ZIP_STORED
+                info.create_system = 3
+                info.external_attr = 0o755 << 16
                 zf.writestr(info, b"")
-            else:
-                if path is None:
-                    zf.writestr(info, b"")
+                fingerprint_hasher.update(f"D:{d_name}\0".encode())
+
+            # 2. Stream files
+            for src_path, rel_name, ext_attr, size in all_files:
+                ext = Path(rel_name).suffix.lower()
+                if mode == "store" or ext in ALREADY_COMPRESSED_EXTS:
+                    comp = zipfile.ZIP_STORED
                 else:
-                    with path.open("rb") as src, zf.open(info, "w", force_zip64=True) as dst:
-                        shutil.copyfileobj(src, dst, length=1024 * 1024)
-            
-            written_files += 1
-            
+                    comp = default_compression
+
+                info = zipfile.ZipInfo(rel_name)
+                info.date_time = (1980, 1, 1, 0, 0, 0)
+                info.compress_type = comp
+                info.create_system = 3
+                info.external_attr = ext_attr or (0o644 << 16)
+
+                with open(src_path, "rb") as fsrc:
+                    with zf.open(info, "w", force_zip64=True) as fdst:
+                        shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
+
+                try:
+                    st = src_path.stat()
+                    if st.st_mtime_ns > max_mtime_ns:
+                        max_mtime_ns = st.st_mtime_ns
+                    fingerprint_hasher.update(f"F:{rel_name}:{size}:{st.st_mtime_ns}\0".encode())
+                except OSError:
+                    fingerprint_hasher.update(f"F:{rel_name}:{size}\0".encode())
+
+                written_files += 1
+                display_name = rel_name if len(rel_name) <= 30 else "..." + rel_name[-27:]
+                print_progress(written_files, total_files, prefix="Writing zip", suffix=display_name)
+
         print_progress(total_files, total_files, prefix="Writing zip", suffix="Done!")
         sys.stderr.write("\n")
         sys.stderr.flush()
 
+        # Self-validate temporary archive before atomic replacement
+        if temp_zip.is_file():
+            validate_zip_archive(temp_zip)
+            os.replace(temp_zip, output_zip)
 
+        # Write metadata
+        metadata_file = output_zip.with_name(f"{output_zip.name}.metadata.json")
+        meta_data = {
+            "packer_version": 2,
+            "zip_mode": mode,
+            "file_count": total_files,
+            "total_size": total_bytes,
+            "max_mtime_ns": max_mtime_ns,
+            "source_dir": str(source_dir),
+            "fingerprint": fingerprint_hasher.hexdigest(),
+        }
+        metadata_file.write_text(json.dumps(meta_data, indent=2) + "\n", encoding="utf-8")
 
+    except Exception:
+        if temp_zip.exists():
+            try:
+                temp_zip.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def _walk_path_following_symlink_dirs(root: Path):
-    seen_dirs = set()
-
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
-        current = Path(dirpath)
-        try:
-            current_stat = current.stat()
-        except OSError:
-            dirnames[:] = []
-            continue
-
-        current_key = (current_stat.st_dev, current_stat.st_ino)
-        if current_key in seen_dirs:
-            dirnames[:] = []
-            continue
-        seen_dirs.add(current_key)
-
-        entries = []
-        for name in dirnames:
-            path = current / name
-            rel = path.relative_to(root).as_posix()
-            entries.append((path, rel, "D"))
-        for name in filenames:
-            path = current / name
-            rel = path.relative_to(root).as_posix()
-            entries.append((path, rel, "F" if path.is_file() else "O"))
-
-        for path, rel, typ in sorted(entries, key=lambda item: item[1]):
-            yield path, rel, typ
+    """Compatibility generator for external callers."""
+    all_files, empty_dirs = _safe_walk_artifact_dir(root)
+    entries = []
+    for d in empty_dirs:
+        entries.append((root / d, d, "D"))
+    for p, rel, _, _ in all_files:
+        entries.append((p, rel, "F"))
+    for item in sorted(entries, key=lambda x: x[1]):
+        yield item
 
 
 def cmd_read_state_value(state_file: str, key: str) -> int:
@@ -244,19 +364,50 @@ def cmd_read_artifact_settings(metadata_file: str) -> int:
 
     print(clean(data.get("syk4y_source")))
     print(clean(data.get("syk4y_item_name")))
+    print(clean(data.get("syk4y_artifact_id")))
     return 0
 
 
-def cmd_write_state_file(state_tmp: str, state_tsv: str) -> int:
+def cmd_write_state_file(state_tmp: str, state_tsv: str, existing_state_file: str = "") -> int:
     state_tmp_path = Path(state_tmp)
     state_tsv_path = Path(state_tsv)
     state = {}
+    if existing_state_file and Path(existing_state_file).is_file():
+        try:
+            state = json.loads(Path(existing_state_file).read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                state = {}
+        except Exception:
+            state = {}
+
     for line in state_tsv_path.read_text(encoding="utf-8").splitlines():
         if not line:
             continue
         key, value = line.split("\t", 1)
         state[key] = value
     state_tmp_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    return 0
+
+
+def cmd_validate_metadata(metadata_file: str) -> int:
+    meta = Path(metadata_file)
+    if not meta.exists():
+        print(f"Error: metadata file '{metadata_file}' does not exist.", file=sys.stderr)
+        return 1
+    try:
+        data = json.loads(meta.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Error: malformed JSON in metadata file '{metadata_file}': {exc}", file=sys.stderr)
+        return 2
+
+    ref = data.get("id")
+    if not isinstance(ref, str) or "/" not in ref:
+        print(f"Error: metadata file '{metadata_file}' missing valid 'id' (format: owner/dataset-slug).", file=sys.stderr)
+        return 3
+    owner, slug = ref.split("/", 1)
+    if not owner.strip() or not slug.strip():
+        print(f"Error: metadata file '{metadata_file}' has empty owner or slug in 'id': {ref!r}.", file=sys.stderr)
+        return 3
     return 0
 
 
@@ -336,57 +487,140 @@ def cmd_pack_wheelhouse_zip(source_dir: str, output_zip: str, zip_mode: str) -> 
             except Exception as e:
                 print(f"Warning: failed to sanitize {req_filename} in wheelhouse: {e}", file=sys.stderr)
 
-    mode = (zip_mode or "store").strip().lower()
-    compression = zipfile.ZIP_STORED if mode == "store" else zipfile.ZIP_DEFLATED
+    try:
+        all_files, empty_dirs = _safe_walk_artifact_dir(source, exclude_paths=[output])
+    except Exception as exc:
+        print(f"Error during wheelhouse scanning: {exc}", file=sys.stderr)
+        return 1
 
-    files_to_compress = []
-    for path in sorted(source.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(source).as_posix()
-        try:
-            st = path.stat()
-            ext_attr = (st.st_mode & 0xFFFF) << 16
-        except OSError:
-            continue
-        files_to_compress.append((path, rel, ext_attr))
+    try:
+        _safe_pack_zip(output, all_files, empty_dirs, zip_mode, source)
+    except Exception as exc:
+        print(f"Error: failed to create wheelhouse ZIP '{output_zip}': {exc}", file=sys.stderr)
+        return 1
 
-    _parallel_pack_zip(output, files_to_compress, compression)
     return 0
 
 
 def cmd_pack_artifact_dir_zip(source_dir: str, output_zip: str, zip_mode: str, force: bool = False) -> int:
-    source = Path(source_dir)
-    output = Path(output_zip)
+    source = Path(source_dir).resolve()
+    output = Path(output_zip).resolve()
 
-    mode = (zip_mode or "store").strip().lower()
-    compression = zipfile.ZIP_STORED if mode == "store" else zipfile.ZIP_DEFLATED
+    if not source.exists():
+        print(f"Error: source directory '{source_dir}' does not exist.", file=sys.stderr)
+        return 1
 
-    files_to_compress = []
-    for path, rel, typ in _walk_path_following_symlink_dirs(source):
-        try:
-            st = path.stat() if typ in {"D", "F"} else path.lstat()
-            ext_attr = (st.st_mode & 0xFFFF) << 16
-        except OSError:
-            continue
-        if typ == "D":
-            files_to_compress.append((None, rel.rstrip("/") + "/", ext_attr))
-        elif typ == "F":
-            files_to_compress.append((path, rel, ext_attr))
+    try:
+        all_files, empty_dirs = _safe_walk_artifact_dir(source, exclude_paths=[output])
+    except Exception as exc:
+        print(f"Error during directory scanning: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        _safe_pack_zip(output, all_files, empty_dirs, zip_mode, source)
+    except Exception as exc:
+        print(f"Error: failed to create ZIP archive '{output_zip}': {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+def cmd_check_zip_cache(source_dir: str, output_zip: str) -> int:
+    source = Path(source_dir).resolve()
+    output = Path(output_zip).resolve()
+    metadata_file = output.with_name(f"{output.name}.metadata.json")
+
+    if not output.is_file():
+        print("invalid")
+        return 2
+
+    try:
+        validate_zip_archive(output)
+    except Exception:
+        print("invalid")
+        return 2
+
+    if not metadata_file.is_file():
+        print("changed")
+        return 1
+
+    try:
+        meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+    except Exception:
+        print("invalid")
+        return 2
+
+    if meta.get("packer_version") != 2:
+        print("changed")
+        return 1
+
+    try:
+        current_fp = _compute_source_fingerprint(source, exclude_paths=[output])
+        if current_fp == meta.get("fingerprint"):
+            print("valid")
+            return 0
         else:
-            files_to_compress.append((path, rel, ext_attr))
+            print("changed")
+            return 1
+    except Exception:
+        print("invalid")
+        return 2
 
-    # Always cleanly overwrite old zip
-    if output.exists():
+
+def cmd_validate_artifact_archive(zip_path: str, metadata_file: str = "", source_dir: str = "") -> int:
+    p_zip = Path(zip_path)
+    if not p_zip.is_file():
+        print(f"ERROR: Dataset archive validation failed.\nReason: Archive file does not exist\nPath: {zip_path}", file=sys.stderr)
+        return 1
+
+    try:
+        stats = validate_zip_archive(p_zip)
+    except ValueError as exc:
+        print(f"ERROR: Dataset archive validation failed.\nReason: {exc}\nPath: {zip_path}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"ERROR: Dataset archive validation failed.\nReason: Corrupt or unreadable archive ({exc})\nPath: {zip_path}", file=sys.stderr)
+        return 1
+
+    # Validate metadata if provided
+    if metadata_file:
+        p_meta = Path(metadata_file)
+        if not p_meta.is_file():
+            print(f"ERROR: Dataset archive validation failed.\nReason: Metadata file does not exist\nPath: {metadata_file}", file=sys.stderr)
+            return 1
         try:
-            output.unlink()
-        except OSError:
-            pass
+            meta = json.loads(p_meta.read_text(encoding="utf-8"))
+            dataset_id = meta.get("id", "")
+            if not isinstance(dataset_id, str) or "/" not in dataset_id:
+                print(f"ERROR: Dataset archive validation failed.\nReason: Invalid dataset id in metadata: {dataset_id!r}\nPath: {metadata_file}", file=sys.stderr)
+                return 1
+            owner, slug = dataset_id.split("/", 1)
+            if not owner.strip() or not slug.strip():
+                print(f"ERROR: Dataset archive validation failed.\nReason: Empty owner or slug in metadata 'id': {dataset_id!r}\nPath: {metadata_file}", file=sys.stderr)
+                return 1
+        except Exception as exc:
+            print(f"ERROR: Dataset archive validation failed.\nReason: Malformed JSON in metadata: {exc}\nPath: {metadata_file}", file=sys.stderr)
+            return 1
 
-    # Ensure parent directory exists
-    output.parent.mkdir(parents=True, exist_ok=True)
+    # Validate cache freshness if source_dir provided
+    if source_dir:
+        p_source = Path(source_dir)
+        if not p_source.exists():
+            print(f"ERROR: Dataset archive validation failed.\nReason: Source directory does not exist\nPath: {source_dir}", file=sys.stderr)
+            return 1
+        meta_cache = p_zip.with_name(f"{p_zip.name}.metadata.json")
+        if meta_cache.is_file():
+            try:
+                cached_data = json.loads(meta_cache.read_text(encoding="utf-8"))
+                current_fp = _compute_source_fingerprint(p_source, exclude_paths=[p_zip])
+                if current_fp != cached_data.get("fingerprint"):
+                    print(f"ERROR: Dataset archive validation failed.\nReason: Archive cache is stale (source directory has changed since packaging)\nPath: {zip_path}", file=sys.stderr)
+                    return 1
+            except Exception:
+                pass
 
-    _parallel_pack_zip(output, files_to_compress, compression, mode="w")
+    size_mb = p_zip.stat().st_size / (1024 * 1024)
+    print(f"Archive structure valid: {stats['file_entries']} files, {stats['dir_entries']} empty dirs ({size_mb:.2f} MB)")
     return 0
 
 
@@ -660,6 +894,10 @@ def main() -> int:
     p_wsf = sub.add_parser("write-state-file")
     p_wsf.add_argument("state_tmp")
     p_wsf.add_argument("state_tsv")
+    p_wsf.add_argument("existing_state_file", nargs="?", default="")
+
+    p_val_meta = sub.add_parser("validate-metadata")
+    p_val_meta.add_argument("metadata_file")
 
     p_pei = sub.add_parser("pyproject-extra-indexes")
     p_pei.add_argument("pyproject_path")
@@ -700,14 +938,30 @@ def main() -> int:
     p_prune.add_argument("source_dir")
     p_prune.add_argument("requirements_file")
 
+    p_czc = sub.add_parser("check-zip-cache")
+    p_czc.add_argument("source_dir")
+    p_czc.add_argument("output_zip")
+
+    p_vaa = sub.add_parser("validate-artifact-archive")
+    p_vaa.add_argument("zip_path")
+    p_vaa.add_argument("metadata_file", nargs="?", default="")
+    p_vaa.add_argument("source_dir", nargs="?", default="")
+
     args = parser.parse_args()
+
+    if args.command == "check-zip-cache":
+        return cmd_check_zip_cache(args.source_dir, args.output_zip)
+    if args.command == "validate-artifact-archive":
+        return cmd_validate_artifact_archive(args.zip_path, args.metadata_file, args.source_dir)
 
     if args.command == "read-state-value":
         return cmd_read_state_value(args.state_file, args.key)
     if args.command == "read-artifact-settings":
         return cmd_read_artifact_settings(args.metadata_file)
     if args.command == "write-state-file":
-        return cmd_write_state_file(args.state_tmp, args.state_tsv)
+        return cmd_write_state_file(args.state_tmp, args.state_tsv, args.existing_state_file)
+    if args.command == "validate-metadata":
+        return cmd_validate_metadata(args.metadata_file)
     if args.command == "pyproject-extra-indexes":
         return cmd_pyproject_extra_indexes(args.pyproject_path)
     if args.command == "pack-wheelhouse-zip":

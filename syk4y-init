@@ -1,29 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve real script directory even if invoked through symlink
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR_LINK="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR_LINK/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/project_root.sh"
 
 usage() {
   cat "$SCRIPT_DIR/templates/syk4y-init-usage.txt"
 }
 
-repo_root="$(pwd)"
+explicit_root=""
 if [[ $# -gt 0 ]] && [[ "$1" == "--repo-root" ]]; then
   if [[ $# -lt 2 ]]; then
     echo "Missing value for --repo-root" >&2
     exit 2
   fi
-  repo_root="$2"
+  explicit_root="$2"
   shift 2
 fi
 
-args=(--repo-root "$repo_root" --skip-gen)
+repo_root_abs="$(syk4y_resolve_project_root "$explicit_root" "$(pwd)")"
+args=(--repo-root "$repo_root_abs" --skip-gen)
 artifacts=()
-
-if ! repo_root_abs="$(cd "$repo_root" 2>/dev/null && pwd)"; then
-  echo "Error: invalid --repo-root '$repo_root'." >&2
-  exit 2
-fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

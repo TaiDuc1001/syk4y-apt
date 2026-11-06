@@ -199,6 +199,8 @@ six = { index = "pypi-custom" }
             self.verify_wheelhouse_zip_strict(zip_paths[0], {"six": "1.17.0"})
 
     def test_cross_arch_build(self):
+        if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+            self.skipTest("Docker daemon not running; cross-architecture build requires Docker")
         with safe_temp_dir() as tmp_path:
             subprocess.run(["uv", "init", "--no-workspace", "--name", "app"], cwd=tmp_path, check=True)
             subprocess.run(["uv", "add", "ipaddr==2.2.0", "requests==2.28.1"], cwd=tmp_path, check=True)
@@ -221,6 +223,8 @@ six = { index = "pypi-custom" }
             self.verify_wheelhouse_zip_strict(zip_paths[0], expected)
 
     def test_deprecated_wheel_arch_warning(self):
+        if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+            self.skipTest("Docker daemon not running; cross-architecture build requires Docker")
         with safe_temp_dir() as tmp_path:
             subprocess.run(["uv", "init", "--no-workspace", "--name", "app"], cwd=tmp_path, check=True)
             subprocess.run(["uv", "add", "six==1.17.0"], cwd=tmp_path, check=True)

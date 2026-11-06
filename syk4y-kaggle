@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve real script directory even if invoked through symlink
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR_LINK="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR_LINK/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/project_root.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/python_env.sh"
 # shellcheck source=/dev/null
@@ -14,23 +24,26 @@ source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_login.sh"
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_upload.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_zip.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_validate.sh"
 
 usage() {
   cat "$SCRIPT_DIR/templates/kaggle-main-usage.txt"
 }
 
 main() {
-  local repo_root
-  repo_root="$(pwd)"
-
+  local explicit_root=""
   if [[ $# -gt 0 ]] && [[ "$1" == "--repo-root" ]]; then
     if [[ $# -lt 2 ]]; then
       echo "Missing value for --repo-root" >&2
       exit 2
     fi
-    repo_root="$2"
+    explicit_root="$2"
     shift 2
   fi
+
+  local repo_root
+  repo_root="$(syk4y_resolve_project_root "$explicit_root" "$(pwd)")"
 
   PYTHON_BIN="$(syk4y_resolve_python_bin_or_die "$repo_root" "syk4y")"
 
@@ -51,6 +64,9 @@ main() {
       ;;
     zip)
       kaggle_zip --repo-root "$repo_root" "$@"
+      ;;
+    validate)
+      kaggle_validate --repo-root "$repo_root" "$@"
       ;;
     account)
       exec "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/account_cli.py" "$@"

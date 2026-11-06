@@ -1,23 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve real script directory even if invoked through symlink
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR_LINK="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR_LINK/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/project_root.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/python_env.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_env.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/fs_utils.sh"
 
 usage() {
   cat "$SCRIPT_DIR/templates/syk4y-doctor-usage.txt"
 }
 
-repo_root="$(pwd)"
+explicit_root=""
 if [[ $# -gt 0 ]] && [[ "$1" == "--repo-root" ]]; then
   if [[ $# -lt 2 ]]; then
     echo "Missing value for --repo-root" >&2
     exit 2
   fi
-  repo_root="$2"
+  explicit_root="$2"
   shift 2
 fi
 
@@ -50,209 +62,301 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+repo_root="$(syk4y_resolve_project_root "$explicit_root" "$(pwd)")"
+
 if [[ -z "$upload_root" ]]; then
   upload_root="$repo_root/kaggle_upload"
 fi
 
-python_bin=""
-has_python=0
-has_pip=0
-has_ensurepip=0
-has_uv=0
-has_uv_pip=0
-has_kaggle_cli=0
-has_kaggle_module=0
-has_kaggle_auth=0
-has_git=0
-is_git_repo=0
-has_pyproject=0
-has_gen_script=0
-has_upload_script=0
-issues=0
-warnings=0
 python_bin="$(syk4y_resolve_python_bin "$repo_root" || true)"
-if [[ -n "$python_bin" ]]; then
-  has_python=1
-fi
 
-if [[ "$has_python" -eq 0 ]]; then
-  issues=$((issues+1))
-fi
+# Execute python diagnostic collector if python is available
+if [[ -n "$python_bin" ]] && command -v "$python_bin" >/dev/null 2>&1; then
+  export REPO_ROOT_DOC="$repo_root"
+  export UPLOAD_ROOT_DOC="$upload_root"
+  export SCRIPT_DIR_DOC="$SCRIPT_DIR"
+  export BASH_VERSION_DOC="${BASH_VERSION:-}"
+  export BASH_MAJOR_DOC="${BASH_VERSINFO[0]:-0}"
+  export JSON_MODE_DOC="$json"
 
-if command -v uv >/dev/null 2>&1; then has_uv=1; fi
-
-if [[ "$has_python" -eq 1 ]]; then
-  if "$python_bin" -m pip --version >/dev/null 2>&1; then
-    has_pip=1
-  fi
-  if "$python_bin" -m ensurepip --help >/dev/null 2>&1; then
-    has_ensurepip=1
-  fi
-  if [[ "$has_uv" -eq 1 ]] && uv pip list --python "$python_bin" >/dev/null 2>&1; then
-    has_uv_pip=1
-  fi
-  if "$python_bin" -m kaggle --help >/dev/null 2>&1; then
-    has_kaggle_module=1
-  fi
-fi
-
-if command -v kaggle >/dev/null 2>&1; then has_kaggle_cli=1; fi
-if command -v git >/dev/null 2>&1; then has_git=1; fi
-if [[ -f "$repo_root/pyproject.toml" ]]; then has_pyproject=1; fi
-if [[ -f "$SCRIPT_DIR/syk4y-gen" ]]; then has_gen_script=1; fi
-if [[ -f "$SCRIPT_DIR/syk4y-kaggle" ]]; then has_upload_script=1; fi
-
-if [[ -n "${KAGGLE_USERNAME:-}" ]] && [[ -n "${KAGGLE_KEY:-}" ]]; then
-  has_kaggle_auth=1
-elif [[ "$has_python" -eq 1 ]]; then
-  if syk4y_has_kaggle_credentials "$python_bin"; then
-    has_kaggle_auth=1
-  fi
-fi
-
-if [[ "$has_gen_script" -eq 0 ]] || [[ "$has_upload_script" -eq 0 ]]; then
-  issues=$((issues+1))
-fi
-
-if [[ "$has_python" -eq 1 ]] && [[ "$has_pip" -eq 0 ]] && [[ "$has_uv_pip" -eq 0 ]] && [[ "$has_ensurepip" -eq 0 ]]; then
-  warnings=$((warnings+1))
-fi
-if [[ "$has_kaggle_cli" -eq 0 ]] && [[ "$has_kaggle_module" -eq 0 ]]; then
-  warnings=$((warnings+1))
-elif [[ "$has_kaggle_auth" -eq 0 ]]; then
-  warnings=$((warnings+1))
-fi
-
-if [[ "$has_git" -eq 1 ]]; then
-  if git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
-    is_git_repo=1
-  fi
-fi
-
-upload_runtime_ready=0
-if [[ "$has_kaggle_cli" -eq 1 ]] || [[ "$has_kaggle_module" -eq 1 ]]; then
-  upload_runtime_ready=1
-fi
-
-upload_auth_ready=0
-if [[ "$has_kaggle_auth" -eq 1 ]]; then
-  upload_auth_ready=1
-fi
-
-upload_ready=0
-if [[ "$upload_runtime_ready" -eq 1 ]] && [[ "$upload_auth_ready" -eq 1 ]]; then
-  upload_ready=1
-fi
-
-wheel_build_ready=0
-if [[ "$has_python" -eq 1 ]] && { [[ "$has_pip" -eq 1 ]] || [[ "$has_uv_pip" -eq 1 ]]; }; then
-  wheel_build_ready=1
-fi
-
-wheel_bootstrap_ready=0
-if [[ "$has_python" -eq 1 ]] && { [[ "$has_pip" -eq 1 ]] || [[ "$has_uv_pip" -eq 1 ]] || [[ "$has_ensurepip" -eq 1 ]]; }; then
-  wheel_bootstrap_ready=1
-fi
-
-if [[ "$json" -eq 1 ]]; then
-  if [[ "$has_python" -eq 1 ]]; then
-    "$python_bin" - <<PY
+  exec "$python_bin" - <<'PY'
 import json
-print(json.dumps({
-  "repo_root": ${repo_root@Q},
-  "upload_root": ${upload_root@Q},
-  "python_bin": ${python_bin@Q},
-  "checks": {
-    "python": bool($has_python),
-    "pip": bool($has_pip),
-    "uv_pip": bool($has_uv_pip),
-    "ensurepip": bool($has_ensurepip),
-    "uv": bool($has_uv),
-    "kaggle_cli": bool($has_kaggle_cli),
-    "kaggle_python_module": bool($has_kaggle_module),
-    "kaggle_auth_configured": bool($has_kaggle_auth),
-    "git": bool($has_git),
-    "git_repo_for_gen": bool($is_git_repo),
-    "pyproject_toml": bool($has_pyproject),
-    "gen_script": bool($has_gen_script),
-    "upload_script": bool($has_upload_script)
-  },
-  "capabilities": {
-    "upload_runtime_ready": bool($upload_runtime_ready),
-    "upload_auth_ready": bool($upload_auth_ready),
-    "upload_ready": bool($upload_ready),
-    "wheel_build_ready": bool($wheel_build_ready),
-    "wheel_bootstrap_ready": bool($wheel_bootstrap_ready)
-  },
-  "ok": bool($issues == 0),
-  "issues": int($issues),
-  "warnings": int($warnings)
-}, indent=2))
+import os
+import shutil
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+repo_root = Path(os.environ["REPO_ROOT_DOC"]).resolve()
+upload_root = Path(os.environ["UPLOAD_ROOT_DOC"]).resolve()
+script_dir = Path(os.environ["SCRIPT_DIR_DOC"]).resolve()
+bash_ver = os.environ.get("BASH_VERSION_DOC", "")
+bash_major = int(os.environ.get("BASH_MAJOR_DOC", "0"))
+json_mode = os.environ.get("JSON_MODE_DOC", "0") == "1"
+
+issues = []
+warnings = []
+recommendations = []
+
+# 1. Project Root Check
+project_root_ok = repo_root.is_dir()
+legacy_nested_dir = upload_root / "kaggle_upload"
+legacy_detected = legacy_nested_dir.is_dir()
+
+if not project_root_ok:
+    issues.append({"component": "Project root", "error": f"Directory not found: {repo_root}", "fix": "Ensure project directory exists"})
+elif legacy_detected:
+    warnings.append({
+        "component": "Project root",
+        "warning": f"Legacy nested layout detected: '{legacy_nested_dir}'",
+        "fix": "Run: syk4y migrate-layout --dry-run && syk4y migrate-layout"
+    })
+
+# 2. Python runtime
+python_bin = sys.executable
+py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+py_ok = sys.version_info >= (3, 8)
+is_conda = bool(os.environ.get("CONDA_PREFIX") and sys.prefix.startswith(os.environ["CONDA_PREFIX"]))
+is_venv = hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
+env_type = "conda" if is_conda else ("venv" if is_venv else "system")
+
+if not py_ok:
+    issues.append({"component": "Python runtime", "error": f"Python 3.8+ required; found {py_ver}", "fix": "Install/activate Python 3.8+"})
+
+# Check pip and uv
+pip_ok = False
+try:
+    p = subprocess.run([python_bin, "-m", "pip", "--version"], capture_output=True)
+    pip_ok = (p.returncode == 0)
+except Exception:
+    pass
+
+uv_ok = bool(shutil.which("uv"))
+if not pip_ok and not uv_ok:
+    warnings.append({"component": "Package manager", "warning": "Neither pip nor uv found in Python environment", "fix": f"uv pip install --python '{python_bin}' pip"})
+
+# 3. Bash version
+bash_ok = (bash_major >= 4)
+if not bash_ok:
+    issues.append({"component": "Bash version", "error": f"Bash 4+ required; found {bash_ver}", "fix": "Install newer bash (e.g. brew install bash on macOS)"})
+
+# 4. Kaggle CLI & module
+kaggle_cli_path = shutil.which("kaggle") or (shutil.which(str(Path(python_bin).parent / "kaggle")))
+kaggle_module_ok = False
+try:
+    p = subprocess.run([python_bin, "-c", "import kaggle; from kaggle.cli import main"], capture_output=True)
+    kaggle_module_ok = (p.returncode == 0)
+except Exception:
+    pass
+
+kaggle_cli_ok = bool(kaggle_cli_path) or kaggle_module_ok
+if not kaggle_cli_ok:
+    warnings.append({"component": "Kaggle CLI", "warning": "Kaggle CLI/package not installed", "fix": f"pip install kaggle  (or uv pip install --python '{python_bin}' kaggle)"})
+
+# 5. Kaggle Authentication
+auth_ok = False
+auth_username = ""
+kaggle_json = Path.home() / ".kaggle" / "kaggle.json"
+if os.environ.get("KAGGLE_USERNAME") and os.environ.get("KAGGLE_KEY"):
+    auth_ok = True
+    auth_username = os.environ["KAGGLE_USERNAME"]
+elif kaggle_json.is_file():
+    try:
+        data = json.loads(kaggle_json.read_text(encoding="utf-8"))
+        if data.get("username") and data.get("key"):
+            auth_ok = True
+            auth_username = data["username"]
+    except Exception:
+        pass
+
+if not auth_ok:
+    warnings.append({"component": "Authentication", "warning": "Kaggle credentials not configured", "fix": "Run: syk4y kaggle login"})
+
+# 6. Artifacts
+initialized_count = 0
+artifact_items = []
+if upload_root.is_dir():
+    for item in upload_root.iterdir():
+        if item.is_dir() and item.name != "kaggle_upload" and not item.name.startswith("."):
+            meta = item / "dataset-metadata.json"
+            if meta.is_file():
+                try:
+                    data = json.loads(meta.read_text(encoding="utf-8"))
+                    if data.get("id"):
+                        initialized_count += 1
+                        artifact_items.append(item.name)
+                except Exception:
+                    pass
+
+# 7. Wheelhouse check
+wheelhouse_state = "Not initialized"
+wheelhouse_path = None
+# Search in upload_root for wheelhouse
+if upload_root.is_dir():
+    candidate_zips = list(upload_root.glob("*-wheelhouse/wheelhouse.zip")) + list(upload_root.glob("wheelhouse.zip"))
+    if candidate_zips:
+        wheelhouse_path = candidate_zips[0]
+        if wheelhouse_path.is_file():
+            try:
+                with zipfile.ZipFile(wheelhouse_path, "r") as zf:
+                    bad = zf.testzip()
+                    if bad is None:
+                        wheelhouse_state = "Valid, cached"
+                    else:
+                        wheelhouse_state = "Corrupt archive"
+                        issues.append({"component": "Wheelhouse", "error": f"Archive corrupt at {wheelhouse_path}", "fix": "syk4y init wheelhouse"})
+            except Exception as e:
+                wheelhouse_state = "Invalid zip"
+                issues.append({"component": "Wheelhouse", "error": f"Invalid zip at {wheelhouse_path}: {e}", "fix": "syk4y init wheelhouse"})
+    elif any("wheelhouse" in name for name in artifact_items):
+        wheelhouse_state = "Missing archive"
+        warnings.append({"component": "Wheelhouse", "warning": "Wheelhouse folder initialized but wheelhouse.zip not built", "fix": "syk4y init wheelhouse"})
+
+# 8. Disk space
+total, used, free = shutil.disk_usage(repo_root if repo_root.exists() else Path.cwd())
+free_gb = free / (1024 ** 3)
+disk_ok = (free_gb >= 1.0)
+if not disk_ok:
+    warnings.append({"component": "Disk space", "warning": f"Low disk space: {free_gb:.1f} GB available", "fix": "Free up disk space"})
+
+# 9. Permissions
+writable_ok = False
+test_target = upload_root if upload_root.exists() else repo_root
+try:
+    test_file = test_target / f".syk4y_perm_test_{os.getpid()}"
+    test_file.write_text("ok", encoding="utf-8")
+    test_file.unlink()
+    writable_ok = True
+except Exception:
+    issues.append({"component": "Permissions", "error": f"Directory not writable: {test_target}", "fix": f"chmod u+w '{test_target}'"})
+
+# 10. CUDA runtime context (informational)
+cuda_info = {"available": False}
+if shutil.which("nvidia-smi"):
+    try:
+        p = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"], capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip():
+            cuda_info = {
+                "available": True,
+                "nvidia_smi": True,
+                "gpu": p.stdout.strip().splitlines()[0],
+            }
+    except Exception:
+        pass
+
+# 11. Anaconda Bash warning probe (libtinfo.so.6)
+libtinfo_warning = False
+try:
+    p = subprocess.run(["bash", "-c", "exit 0"], capture_output=True, text=True)
+    if "libtinfo.so.6: no version information available" in p.stderr:
+        libtinfo_warning = True
+        warnings.append({
+            "component": "Anaconda libtinfo",
+            "warning": "bash loading Anaconda libtinfo.so.6 without symbol versioning via LD_LIBRARY_PATH (harmless/non-fatal)",
+            "fix": "Avoid exporting Anaconda lib/ in global LD_LIBRARY_PATH; use 'conda activate' instead."
+        })
+except Exception:
+    pass
+
+status_str = "READY" if (not issues and not warnings) else ("READY" if not issues else "ACTION_REQUIRED")
+
+if json_mode:
+    out = {
+        "status": status_str,
+        "ok": len(issues) == 0,
+        "project_root": {"status": "OK" if project_root_ok else "ERROR", "path": str(repo_root), "legacy_nested_layout": legacy_detected},
+        "python_runtime": {"status": "OK" if py_ok else "ERROR", "version": py_ver, "path": python_bin, "type": env_type, "pip": pip_ok, "uv": uv_ok},
+        "bash_version": {"status": "OK" if bash_ok else "ERROR", "version": bash_ver, "major": bash_major},
+        "kaggle_cli": {"status": "OK" if kaggle_cli_ok else "WARNING", "installed": kaggle_cli_ok, "path": kaggle_cli_path or "python_module"},
+        "authentication": {"status": "OK" if auth_ok else "WARNING", "configured": auth_ok, "username": auth_username},
+        "artifacts": {"status": "OK", "count": initialized_count, "items": artifact_items},
+        "wheelhouse": {"status": "OK" if "Valid" in wheelhouse_state else ("WARNING" if "Not" in wheelhouse_state else "ERROR"), "state": wheelhouse_state, "path": str(wheelhouse_path) if wheelhouse_path else None},
+        "disk_space": {"status": "OK" if disk_ok else "WARNING", "available_gb": round(free_gb, 2)},
+        "permissions": {"status": "OK" if writable_ok else "ERROR", "writable": writable_ok},
+        "cuda": cuda_info,
+        "anaconda_libtinfo_warning": libtinfo_warning,
+        "issues": issues,
+        "warnings": warnings,
+    }
+    print(json.dumps(out, indent=2))
+    sys.exit(0 if len(issues) == 0 else 1)
+
+# Format human-readable output
+def rpad(s, n=17):
+    return s.ljust(n)
+
+artifacts_display = f"{initialized_count} initialized" if initialized_count > 0 else "None initialized"
+if legacy_detected and initialized_count == 0:
+    artifacts_display = "Legacy nested layout"
+
+print("syk4y doctor\n")
+print(f"{rpad('Project root')}{'OK' if project_root_ok else 'ERROR'}")
+print(f"{rpad('Python runtime')}{'OK' if py_ok else 'ERROR'}")
+print(f"{rpad('Bash version')}{'OK' if bash_ok else 'ERROR'}")
+print(f"{rpad('Kaggle CLI')}{'OK' if kaggle_cli_ok else 'MISSING'}")
+print(f"{rpad('Authentication')}{'OK' if auth_ok else 'MISSING'}")
+print(f"{rpad('Artifacts')}{artifacts_display}")
+print(f"{rpad('Wheelhouse')}{wheelhouse_state}")
+print(f"{rpad('Disk space')}{'OK' if disk_ok else 'LOW'}")
+print(f"{rpad('Permissions')}{'OK' if writable_ok else 'ERROR'}")
+
+if cuda_info.get("available"):
+    print(f"{rpad('GPU Acceleration')}OK ({cuda_info.get('gpu', 'NVIDIA GPU')})")
+
+print(f"\nStatus: {status_str}")
+
+if legacy_detected:
+    print("\n[!] Notice: Legacy nested layout detected at:")
+    print(f"    {legacy_nested_dir}")
+    print("    To safely migrate your wheelhouse and artifacts to standard layout:")
+    print("      syk4y migrate-layout --dry-run")
+    print("      syk4y migrate-layout")
+
+if issues or warnings:
+    print("\nDiagnostics & Recovery:")
+    for item in issues:
+        print(f"  - [FAIL] {item['component']}: {item['error']}")
+        print(f"           Fix: {item['fix']}")
+    for item in warnings:
+        print(f"  - [WARN] {item['component']}: {item['warning']}")
+        print(f"           Fix: {item['fix']}")
+
+sys.exit(0 if len(issues) == 0 else 1)
 PY
-  else
-    repo_root_json="$(printf '%s' "$repo_root" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-    upload_root_json="$(printf '%s' "$upload_root" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-    cat <<JSON
+  exit $?
+fi
+
+# Fallback if Python binary is completely missing
+if [[ "$json" -eq 1 ]]; then
+  cat <<JSON
 {
-  "repo_root": "$repo_root_json",
-  "upload_root": "$upload_root_json",
-  "python_bin": "",
-  "checks": {
-    "python": false,
-    "pip": false,
-    "uv_pip": false,
-    "ensurepip": false,
-    "uv": $( [[ "$has_uv" -eq 1 ]] && echo true || echo false ),
-    "kaggle_cli": $( [[ "$has_kaggle_cli" -eq 1 ]] && echo true || echo false ),
-    "kaggle_python_module": false,
-    "kaggle_auth_configured": $( [[ "$has_kaggle_auth" -eq 1 ]] && echo true || echo false ),
-    "git": $( [[ "$has_git" -eq 1 ]] && echo true || echo false ),
-    "git_repo_for_gen": $( [[ "$is_git_repo" -eq 1 ]] && echo true || echo false ),
-    "pyproject_toml": $( [[ "$has_pyproject" -eq 1 ]] && echo true || echo false ),
-    "gen_script": $( [[ "$has_gen_script" -eq 1 ]] && echo true || echo false ),
-    "upload_script": $( [[ "$has_upload_script" -eq 1 ]] && echo true || echo false )
-  },
-  "capabilities": {
-    "upload_runtime_ready": $( [[ "$upload_runtime_ready" -eq 1 ]] && echo true || echo false ),
-    "upload_auth_ready": $( [[ "$upload_auth_ready" -eq 1 ]] && echo true || echo false ),
-    "upload_ready": $( [[ "$upload_ready" -eq 1 ]] && echo true || echo false ),
-    "wheel_build_ready": false,
-    "wheel_bootstrap_ready": false
-  },
+  "status": "ACTION_REQUIRED",
   "ok": false,
-  "issues": $issues,
-  "warnings": $warnings
+  "project_root": {"status": "OK", "path": "$repo_root"},
+  "python_runtime": {"status": "ERROR", "version": null, "path": null},
+  "bash_version": {"status": "OK", "version": "${BASH_VERSION:-}"},
+  "issues": [{"component": "Python runtime", "error": "No Python interpreter found", "fix": "Install python3"}]
 }
 JSON
-  fi
-else
-  echo "Repo root: $repo_root"
-  echo "Upload root: $upload_root"
-  echo "python: $([[ $has_python -eq 1 ]] && echo "OK ($python_bin)" || echo MISSING)"
-  echo "pip: $([[ $has_pip -eq 1 ]] && echo OK || echo MISSING)"
-  echo "uv pip: $([[ $has_uv_pip -eq 1 ]] && echo OK || echo MISSING)"
-  echo "ensurepip: $([[ $has_ensurepip -eq 1 ]] && echo OK || echo MISSING)"
-  echo "uv: $([[ $has_uv -eq 1 ]] && echo OK || echo MISSING)"
-  echo "kaggle CLI: $([[ $has_kaggle_cli -eq 1 ]] && echo OK || echo MISSING)"
-  echo "kaggle python module: $([[ $has_kaggle_module -eq 1 ]] && echo OK || echo MISSING)"
-  echo "kaggle auth: $([[ $has_kaggle_auth -eq 1 ]] && echo OK || echo MISSING)"
-  echo "git: $([[ $has_git -eq 1 ]] && echo OK || echo MISSING)"
-  echo "git repo for 'gen': $([[ $is_git_repo -eq 1 ]] && echo OK || echo NO)"
-  echo "pyproject.toml: $([[ $has_pyproject -eq 1 ]] && echo FOUND || echo MISSING)"
-  echo "upload runtime ready: $([[ $upload_runtime_ready -eq 1 ]] && echo YES || echo NO)"
-  echo "upload auth ready: $([[ $upload_auth_ready -eq 1 ]] && echo YES || echo NO)"
-  echo "upload ready: $([[ $upload_ready -eq 1 ]] && echo YES || echo NO)"
-  echo "wheel build ready: $([[ $wheel_build_ready -eq 1 ]] && echo YES || echo NO)"
-  echo "wheel bootstrap ready: $([[ $wheel_bootstrap_ready -eq 1 ]] && echo YES || echo NO)"
-  echo "scripts: gen=$([[ $has_gen_script -eq 1 ]] && echo OK || echo MISSING), upload=$([[ $has_upload_script -eq 1 ]] && echo OK || echo MISSING)"
-  if [[ "$warnings" -gt 0 ]]; then
-    echo "warnings: $warnings"
-  fi
-  if [[ "$has_python" -eq 0 ]]; then
-    syk4y_print_python_install_hint
-  fi
-fi
-
-if [[ "$issues" -gt 0 ]]; then
   exit 1
 fi
+
+echo "syk4y doctor"
+echo ""
+printf '%-17s%s\n' "Project root" "OK"
+printf '%-17s%s\n' "Python runtime" "MISSING"
+printf '%-17s%s\n' "Bash version" "OK"
+printf '%-17s%s\n' "Kaggle CLI" "MISSING"
+printf '%-17s%s\n' "Authentication" "MISSING"
+printf '%-17s%s\n' "Artifacts" "None initialized"
+printf '%-17s%s\n' "Wheelhouse" "Not initialized"
+printf '%-17s%s\n' "Disk space" "OK"
+printf '%-17s%s\n' "Permissions" "OK"
+echo ""
+echo "Status: ACTION_REQUIRED"
+echo ""
+echo "Diagnostics & Recovery:"
+echo "  - [FAIL] Python runtime: No Python interpreter found"
+echo "           Fix: Install python3 (e.g. apt install python3 python3-venv or uv)"
+exit 1

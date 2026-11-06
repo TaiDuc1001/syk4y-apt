@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve real script directory even if invoked through symlink
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR_LINK="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR_LINK/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd)"
+
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/project_root.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/python_env.sh"
+
+repo_root_arg=""
+if [[ $# -gt 0 ]] && [[ "$1" == "--repo-root" ]]; then
+  if [[ $# -lt 2 ]]; then
+    echo "Missing value for --repo-root" >&2
+    exit 2
+  fi
+  repo_root_arg="$2"
+  shift 2
+fi
+
+repo_root="$(syk4y_resolve_project_root "$repo_root_arg" "$(pwd)")"
+python_bin="$(syk4y_resolve_python_bin_or_die "$repo_root" "syk4y migrate-layout")"
+
+exec "$python_bin" "$SCRIPT_DIR/syk4y-lib/migrate_layout_cli.py" --repo-root "$repo_root" "$@"

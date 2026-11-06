@@ -46,19 +46,33 @@ kaggle_zip() (
 
     source_path="$(artifact_source_path "$artifact_id")"
     if [[ -d "$source_path" && "$DIR_MODE" == "zip" ]]; then
-      echo "Processing zip cache for '$artifact_id'..."
       cache_file="$cache_dir/${artifact_id}.zip"
-      
-      if "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-        pack-artifact-dir-zip \
+      local cache_status
+      cache_status="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+        check-zip-cache \
         "$source_path" \
-        "$cache_file" \
-        "$ARTIFACT_ZIP_MODE" \
-        "${force_args[@]}"; then
-        any_zipped=1
+        "$cache_file" 2>/dev/null || echo "invalid")"
+
+      if [[ "$FORCE_UPLOAD" -eq 0 && "$cache_status" == "valid" ]]; then
+        echo "Cache valid: reusing $(basename "$cache_file")"
       else
-        echo "Error: failed to zip '$artifact_id'" >&2
-        return 1
+        if [[ "$cache_status" == "changed" ]]; then
+          echo "Source changed: rebuilding $(basename "$cache_file")"
+        else
+          echo "Cache invalid: rebuilding $(basename "$cache_file")"
+        fi
+
+        if "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
+          pack-artifact-dir-zip \
+          "$source_path" \
+          "$cache_file" \
+          "$ARTIFACT_ZIP_MODE" \
+          "${force_args[@]}"; then
+          any_zipped=1
+        else
+          echo "Error: failed to zip '$artifact_id'" >&2
+          return 1
+        fi
       fi
     fi
   done
