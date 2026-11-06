@@ -94,7 +94,6 @@ build_wheelhouse_if_needed() {
           --format requirements-txt \
           --no-hashes \
           --no-header \
-          --no-annotate \
           --no-editable \
           --no-emit-project \
           --output-file "$host_req_out" 2>/dev/null && \
@@ -103,7 +102,6 @@ build_wheelhouse_if_needed() {
           --locked \
           --no-hashes \
           --no-header \
-          --no-annotate \
           --no-editable \
           --no-emit-project \
           --output-file "$host_req_out"; then
@@ -363,7 +361,6 @@ build_wheelhouse_if_needed() {
       --format requirements-txt \
       --no-hashes \
       --no-header \
-      --no-annotate \
       --no-editable \
       --no-emit-project \
       --output-file "$req_out" 2>/dev/null && \
@@ -372,7 +369,6 @@ build_wheelhouse_if_needed() {
       --locked \
       --no-hashes \
       --no-header \
-      --no-annotate \
       --no-editable \
       --no-emit-project \
       --output-file "$req_out"; then
