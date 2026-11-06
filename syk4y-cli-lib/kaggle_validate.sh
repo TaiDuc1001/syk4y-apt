@@ -17,6 +17,30 @@ source "${SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}/sy
 source "${SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}/syk4y-cli-lib/kaggle_upload_artifacts.sh"
 
 kaggle_validate() (
+  local validation_level="quick"
+  local remaining_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --level)
+        if [[ $# -lt 2 ]]; then
+          echo "Missing value for --level" >&2
+          return 2
+        fi
+        validation_level="$2"
+        shift 2
+        ;;
+      --level=*)
+        validation_level="${1#*=}"
+        shift
+        ;;
+      *)
+        remaining_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  set -- "${remaining_args[@]}"
+
   kaggle_upload_parse_args "$@"
   kaggle_upload_prepare_context
 
@@ -27,7 +51,7 @@ kaggle_validate() (
   temp_dir="$REPO_ROOT/.syk4y-temp"
   cache_dir="$temp_dir/kaggle-zip-cache"
 
-  echo "Validating artifacts for Kaggle upload..."
+  echo "Validating artifacts for Kaggle upload (level: $validation_level)..."
   local any_failed=0
 
   for artifact_id in "${ARTIFACT_IDS[@]}"; do
@@ -59,7 +83,8 @@ kaggle_validate() (
       validate-artifact-archive \
       "$archive_to_validate" \
       "$metadata_file" \
-      "$source_path"; then
+      "$source_path" \
+      --level "$validation_level"; then
       any_failed=1
     else
       echo "Artifact '$artifact_id': VALID"

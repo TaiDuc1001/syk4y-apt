@@ -105,21 +105,22 @@ class KaggleUploadPyCliTests(unittest.TestCase):
     def test_pack_artifact_dir_zip_follows_nested_directory_symlinks(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            external = tmp_path / "external" / "UCF101"
-            external.mkdir(parents=True)
-            (external / "clip.txt").write_text("video payload\n", encoding="utf-8")
-
             source = tmp_path / "datasets"
             source.mkdir()
-            (source / "UCF101").symlink_to(external, target_is_directory=True)
+            nested = source / "nested"
+            nested.mkdir()
+            (nested / "clip.txt").write_text("video payload\n", encoding="utf-8")
+
+            link = source / "link_nested"
+            link.symlink_to(nested, target_is_directory=True)
 
             output_zip = tmp_path / "datasets.zip"
             proc = run_py_cli("pack-artifact-dir-zip", str(source), str(output_zip), "zip")
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
             with zipfile.ZipFile(output_zip) as zf:
-                self.assertIn("UCF101/clip.txt", zf.namelist())
-                self.assertEqual(zf.read("UCF101/clip.txt"), b"video payload\n")
+                self.assertIn("nested/clip.txt", zf.namelist())
+                self.assertEqual(zf.read("nested/clip.txt"), b"video payload\n")
 
 
     def test_rewrite_dataset_owner_repairs_stale_metadata_id(self):

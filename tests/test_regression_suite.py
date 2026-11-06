@@ -219,6 +219,10 @@ class Syk4yRegressionSuite(unittest.TestCase):
         fake_kaggle.write_text(
             f"""#!/usr/bin/env bash
 echo "$*" >> "{log_file}"
+if [[ "$1" == "datasets" && "$2" == "status" ]]; then
+  echo "ready"
+  exit 0
+fi
 for ((i=1; i<=$#; i++)); do
   if [[ "${{!i}}" == "-p" ]]; then
     next_idx=$((i+1))
@@ -279,6 +283,10 @@ exit 0
         fake_kaggle.write_text(
             f"""#!/usr/bin/env bash
 echo "$*" >> "{log_file}"
+if [[ "$1" == "datasets" && "$2" == "status" ]]; then
+  echo "ready"
+  exit 0
+fi
 for ((i=1; i<=$#; i++)); do
   if [[ "${{!i}}" == "-p" ]]; then
     next_idx=$((i+1))

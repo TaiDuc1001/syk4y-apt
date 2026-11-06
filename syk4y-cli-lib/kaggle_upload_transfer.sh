@@ -27,9 +27,9 @@ clear_resume_markers() {
 }
 
 run_kaggle_upload_checked() {
-  local max_retries=3
+  local max_retries="${KAGGLE_MAX_RETRIES:-3}"
   local attempt=1
-  local delay=2
+  local delay="${KAGGLE_INITIAL_DELAY:-2}"
   local command_status=0
   local temp_dir="${REPO_ROOT:-$(pwd)}/.syk4y-temp"
   mkdir -p "$temp_dir" 2>/dev/null || temp_dir="${TMPDIR:-/tmp}"
@@ -58,17 +58,26 @@ run_kaggle_upload_checked() {
       return 0
     fi
 
-    # Permanent error checks: authentication, permissions, validation
-    if grep -Eqi '(401|403|unauthorized|forbidden|invalid credentials|kaggle api key not found|bad request|400|directory already exists|already exists)' "$output_file"; then
-      echo "Permanent error detected. Not retrying." >&2
+    # Check for authentication / authorization error (fail fast, no retry)
+    if grep -Eqi '(401|403|unauthorized|forbidden|invalid credentials|kaggle api key not found)' "$output_file"; then
+      echo "Authentication or permission error detected. Not retrying." >&2
       rm -f "$output_file"
       return "$command_status"
     fi
 
-    # Transient error handling: retry with bounded exponential backoff
+    # Check for permanent content/validation error (fail fast, no retry)
+    if grep -Eqi '(directory already exists|already exists|bad request|400)' "$output_file"; then
+      echo "Permanent content error detected. Not retrying." >&2
+      rm -f "$output_file"
+      return "$command_status"
+    fi
+
+    # Transient error handling: retry with bounded exponential backoff and jitter
     if [[ "$attempt" -lt "$max_retries" ]]; then
-      echo "Transient upload error encountered (attempt $attempt/$max_retries). Retrying in ${delay}s..." >&2
-      sleep "$delay"
+      local jitter=$((RANDOM % 2))
+      local sleep_time=$((delay + jitter))
+      echo "Transient upload error encountered (attempt $attempt/$max_retries). Retrying in ${sleep_time}s..." >&2
+      sleep "$sleep_time"
       delay=$((delay * 2))
       attempt=$((attempt + 1))
       rm -f "$output_file"
@@ -124,53 +133,55 @@ verify_kaggle_dataset_status() {
   local delay="${KAGGLE_STATUS_POLL_DELAY:-2}"
   local attempt=1
   local status_output=""
+  local parse_code=0
+  local parse_out=""
 
   echo "Verifying remote dataset status on Kaggle for '$dataset_ref'..."
   while [[ "$attempt" -le "$max_attempts" ]]; do
-    status_output="$("${KAGGLE_CMD[@]}" datasets status "$dataset_ref" 2>&1 || true)"
-    local clean_status
-    clean_status="$(printf '%s' "$status_output" | tr '[:upper:]' '[:lower:]')"
+    local exit_code=0
+    status_output="$("${KAGGLE_CMD[@]}" datasets status "$dataset_ref" 2>&1)" || exit_code=$?
 
-    if [[ "$clean_status" == *"ready"* ]]; then
+    parse_out="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" parse-kaggle-status "$status_output" "$exit_code")"
+    parse_code=$?
+
+    if [[ "$parse_code" -eq 0 ]]; then
       echo "Dataset creation verified on Kaggle: READY"
       return 0
-    elif [[ "$clean_status" == *"error"* || "$clean_status" == *"failed"* || "$clean_status" == *"already exists"* ]]; then
-      echo "Error: Kaggle dataset processing failed on server for '$dataset_ref'." >&2
-      echo "Server response: $status_output" >&2
-      return 1
-    elif [[ "$clean_status" == *"pending"* || "$clean_status" == *"processing"* ]]; then
+    elif [[ "$parse_code" -eq 10 ]]; then
+      # PROCESSING / PENDING
       if [[ "$attempt" -lt "$max_attempts" ]]; then
         sleep "$delay"
       fi
+    elif [[ "$parse_code" -eq 20 ]]; then
+      # FAILED
+      echo "Error: Kaggle dataset processing failed on server for '$dataset_ref'." >&2
+      echo "Server response: $parse_out" >&2
+      return 1
+    elif [[ "$parse_code" -eq 30 ]]; then
+      # AUTH_ERROR
+      echo "Error: Authentication / authorization failed for Kaggle dataset '$dataset_ref'." >&2
+      echo "Server response: $parse_out" >&2
+      return 1
     else
+      # UNKNOWN or other
+      echo "Warning: Unrecognized status response from Kaggle: $parse_out" >&2
       break
     fi
     attempt=$((attempt + 1))
   done
 
-  if [[ "$clean_status" == *"pending"* || "$clean_status" == *"processing"* ]]; then
+  if [[ "$parse_code" -eq 10 ]]; then
     echo "Dataset upload accepted by Kaggle. Remote ingestion is currently PROCESSING."
-    return 0
+    return 10
   fi
 
-  return 0
+  echo "Error: Could not verify Kaggle dataset status for '$dataset_ref' (result: $parse_out)." >&2
+  return 1
 }
 
 compute_artifact_fingerprint() {
   local source_path="$1"
-  local item_name="$2"
-  if [[ -f "$source_path" ]]; then
-    syk4y_sha256 "$source_path"
-  elif [[ -d "$source_path" ]]; then
-    local cache_dir="${REPO_ROOT:-$(pwd)}/.syk4y-temp/kaggle-zip-cache"
-    local cache_file="$cache_dir/${item_name}.zip"
-    if [[ -f "$cache_file" ]]; then
-      syk4y_sha256 "$cache_file"
-    else
-      # Fallback to directory mtime/size fingerprint
-      find "$source_path" -type f -exec stat -f "%m %z" {} + 2>/dev/null || find "$source_path" -type f -exec stat -c "%Y %s" {} + 2>/dev/null || true
-    fi
-  fi
+  "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" compute-source-fingerprint "$source_path"
 }
 
 upload_single_artifact() {
@@ -189,15 +200,41 @@ upload_single_artifact() {
     return 1
   fi
 
-  # Check if artifact is unchanged to avoid unnecessary re-uploads (unless --force)
-  local current_fingerprint last_fingerprint
-  if [[ "$FORCE_UPLOAD" -eq 0 && "$dataset_exists" -eq 1 ]]; then
-    current_fingerprint="$(compute_artifact_fingerprint "$source_path" "$artifact_id" | syk4y_sha256)"
-    last_fingerprint="$(read_state_value "${artifact_id}_hash")"
-    if [[ -n "$current_fingerprint" && -n "$last_fingerprint" && "$current_fingerprint" == "$last_fingerprint" ]]; then
-      echo "Artifact '$artifact_id' is up to date on remote dataset '$dataset_ref'. Skipping re-upload (use --force to override)."
-      return 0
+  # Compute current source fingerprint
+  local current_source_fp
+  current_source_fp="$(compute_artifact_fingerprint "$source_path")"
+
+  # Reconcile previously pending PROCESSING upload if exists
+  local prev_state_json prev_status prev_source_fp
+  prev_state_json="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" get-artifact-state "$STATE_FILE" "$artifact_id")"
+  prev_status="$("$PYTHON_BIN" -c "import json, sys; print(json.loads(sys.argv[1]).get('status', ''))" "$prev_state_json" 2>/dev/null || echo "")"
+  prev_source_fp="$("$PYTHON_BIN" -c "import json, sys; print(json.loads(sys.argv[1]).get('source_fingerprint', ''))" "$prev_state_json" 2>/dev/null || echo "")"
+
+  if [[ "$prev_status" == "PROCESSING" && "$dataset_exists" -eq 1 ]]; then
+    echo "Artifact '$artifact_id' was previously left in PROCESSING state. Reconciling with Kaggle..."
+    local reconcile_status=0
+    verify_kaggle_dataset_status "$dataset_ref" || reconcile_status=$?
+    if [[ "$reconcile_status" -eq 0 ]]; then
+      echo "Remote dataset is now confirmed READY."
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" set-artifact-state \
+        "$STATE_FILE" "$artifact_id" "READY" \
+        --source-fp "$prev_source_fp" \
+        --dataset-ref "$dataset_ref"
+      prev_status="READY"
+    elif [[ "$reconcile_status" -eq 1 ]]; then
+      echo "Previous remote processing failed on Kaggle. Proceeding with fresh upload..."
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" set-artifact-state \
+        "$STATE_FILE" "$artifact_id" "PROCESSING_FAILED" \
+        --source-fp "$prev_source_fp" \
+        --dataset-ref "$dataset_ref"
+      prev_status="PROCESSING_FAILED"
     fi
+  fi
+
+  # Check if artifact is confirmed READY and unchanged to avoid unnecessary re-uploads (unless --force)
+  if [[ "$FORCE_UPLOAD" -eq 0 && "$dataset_exists" -eq 1 && "$prev_status" == "READY" && -n "$prev_source_fp" && "$prev_source_fp" == "$current_source_fp" ]]; then
+    echo "Artifact '$artifact_id' is up to date on remote dataset '$dataset_ref'. Skipping re-upload (use --force to override)."
+    return 0
   fi
 
   # Handle dry-run mode
@@ -261,13 +298,14 @@ upload_single_artifact() {
       fi
 
       if [[ "$upload_status" -eq 0 ]]; then
-        # Fail-fast pre-upload validation
+        # Fail-fast pre-upload validation (quick level before network transfer)
         echo "Pre-upload validation for '$artifact_id'..."
         if ! "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
           validate-artifact-archive \
           "$cache_file" \
           "$metadata_file" \
-          "$source_path"; then
+          "$source_path" \
+          --level quick; then
           echo "Error: pre-upload archive validation failed for '$artifact_id'." >&2
           upload_status=1
         fi
@@ -281,7 +319,8 @@ upload_single_artifact() {
       if ! "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
         validate-artifact-archive \
         "$source_path" \
-        "$metadata_file"; then
+        "$metadata_file" \
+        --level quick; then
         echo "Error: pre-upload archive validation failed for '$artifact_id'." >&2
         upload_status=1
       fi
@@ -297,6 +336,12 @@ upload_single_artifact() {
   fi
 
   if [[ "$upload_status" -eq 0 ]]; then
+    # Record state transition: TRANSFERRING
+    "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" set-artifact-state \
+      "$STATE_FILE" "$artifact_id" "TRANSFERRING" \
+      --source-fp "$current_source_fp" \
+      --dataset-ref "$dataset_ref"
+
     if [[ "$dataset_exists" -eq 1 ]]; then
       echo "Updating '$artifact_id' dataset."
       run_kaggle_upload_checked datasets version -p "$stage_dir" -m "${VERSION_MESSAGE} [$artifact_id]" -r "$DIR_MODE" || upload_status=$?
@@ -304,28 +349,45 @@ upload_single_artifact() {
       echo "Dataset '$dataset_ref' does not exist yet; creating with artifact '$item_name'."
       run_kaggle_upload_checked datasets create -p "$stage_dir" -r "$DIR_MODE" || upload_status=$?
     fi
-  fi
 
-  if [[ "$upload_status" -eq 0 ]]; then
-    if ! verify_kaggle_dataset_status "$dataset_ref"; then
-      echo "Error: Remote Kaggle dataset creation/update failed processing for '$dataset_ref'." >&2
-      upload_status=1
+    if [[ "$upload_status" -ne 0 ]]; then
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" set-artifact-state \
+        "$STATE_FILE" "$artifact_id" "TRANSFER_FAILED" \
+        --source-fp "$current_source_fp" \
+        --dataset-ref "$dataset_ref"
+    else
+      # Transition to PROCESSING
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" set-artifact-state \
+        "$STATE_FILE" "$artifact_id" "PROCESSING" \
+        --source-fp "$current_source_fp" \
+        --dataset-ref "$dataset_ref"
     fi
   fi
 
   if [[ "$upload_status" -eq 0 ]]; then
-    echo "Uploaded artifact source path: $source_path"
-    # Update uploaded artifact hash in state
-    local uploaded_hash
-    uploaded_hash="$(compute_artifact_fingerprint "$source_path" "$artifact_id" | syk4y_sha256)"
-    if [[ -n "$uploaded_hash" ]]; then
-      local state_tmp state_tsv
-      state_tmp="$(syk4y_mktemp "$temp_dir" "state-update")"
-      state_tsv="$(syk4y_mktemp "$temp_dir" "state-tsv")"
-      printf '%s\t%s\n' "${artifact_id}_hash" "$uploaded_hash" > "$state_tsv"
-      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" write-state-file "$state_tmp" "$state_tsv" "$STATE_FILE"
-      rm -f "$state_tsv"
-      mv -f "$state_tmp" "$STATE_FILE"
+    local verify_res=0
+    verify_kaggle_dataset_status "$dataset_ref" || verify_res=$?
+
+    if [[ "$verify_res" -eq 0 ]]; then
+      # Confirmed READY!
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" set-artifact-state \
+        "$STATE_FILE" "$artifact_id" "READY" \
+        --source-fp "$current_source_fp" \
+        --dataset-ref "$dataset_ref"
+      echo "Uploaded artifact source path: $source_path"
+    elif [[ "$verify_res" -eq 10 ]]; then
+      # Remote ingestion still pending (polling timed out)
+      echo "Dataset upload accepted by Kaggle. Remote ingestion is currently PROCESSING."
+      echo "Local state recorded as PROCESSING. Future invocations will reconcile automatically."
+      upload_status=0
+    else
+      # Failed on Kaggle
+      "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" set-artifact-state \
+        "$STATE_FILE" "$artifact_id" "PROCESSING_FAILED" \
+        --source-fp "$current_source_fp" \
+        --dataset-ref "$dataset_ref"
+      echo "Error: Remote Kaggle dataset creation/update failed processing for '$dataset_ref'." >&2
+      upload_status=1
     fi
   fi
 

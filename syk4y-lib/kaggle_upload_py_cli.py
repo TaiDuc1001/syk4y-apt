@@ -41,8 +41,28 @@ def _normalize_archive_relpath(rel_path: str) -> str:
     return "/".join(parts)
 
 
+def compute_manifest_fingerprint(all_files: list, empty_dirs: set) -> str:
+    all_files_sorted = sorted(all_files, key=lambda x: x[1])
+    empty_dirs_sorted = sorted(d.rstrip("/") for d in empty_dirs)
+
+    h = hashlib.sha256()
+    h.update(b"V3_SAFE_ZIP_FP\0")
+    for d in empty_dirs_sorted:
+        h.update(f"D:{d}\0".encode())
+    for src_path, rel, _, size in all_files_sorted:
+        try:
+            mtime_ns = Path(src_path).stat().st_mtime_ns
+            h.update(f"F:{rel}:{size}:{mtime_ns}\0".encode())
+        except OSError:
+            h.update(f"F:{rel}:{size}\0".encode())
+    return h.hexdigest()
+
+
 def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
-    source_dir = source_dir.resolve()
+    source_dir = Path(source_dir).resolve()
+    if not source_dir.is_dir():
+        raise ValueError(f"Source directory does not exist or is not a directory: {source_dir}")
+
     exclude_realpaths = set()
     if exclude_paths:
         for p in exclude_paths:
@@ -61,8 +81,7 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
         try:
             st = current_dir.stat()
         except OSError as exc:
-            print(f"Warning: unable to stat directory '{current_dir}': {exc}", file=sys.stderr)
-            return None
+            raise OSError(f"Cannot stat directory '{current_dir}': {exc}")
 
         dir_key = (st.st_dev, st.st_ino)
         if dir_key in visited_real_dirs:
@@ -74,8 +93,7 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
             # Prefer real directories before symlinks to avoid recording alias paths
             entries = sorted(os.scandir(current_dir), key=lambda e: (e.is_symlink(), e.name))
         except OSError as exc:
-            print(f"Warning: unable to read directory '{current_dir}': {exc}", file=sys.stderr)
-            return None
+            raise OSError(f"Cannot read directory '{current_dir}': {exc}")
 
         has_child_file = False
 
@@ -94,10 +112,31 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
             rel_path = f"{rel_prefix}/{name}" if rel_prefix else name
             norm_rel = _normalize_archive_relpath(rel_path)
 
+            # Strict symlink policy (P0-D):
+            # 1. Reject links pointing outside source directory
+            # 2. Reject dangling symlinks
+            # 3. Detect loops and aliasing
+            if entry.is_symlink():
+                try:
+                    resolved_target = entry_path.resolve(strict=True)
+                except FileNotFoundError:
+                    target_dest = os.readlink(entry_path)
+                    raise ValueError(f"Dangling symlink detected: '{entry_path}' points to non-existent target '{target_dest}'")
+                except OSError as exc:
+                    raise ValueError(f"Cannot resolve symlink '{entry_path}': {exc}")
+
+                try:
+                    resolved_target.relative_to(source_dir)
+                except ValueError:
+                    raise ValueError(
+                        f"Symlink escape detected: '{entry_path}' points to '{resolved_target}', "
+                        f"which is outside source directory '{source_dir}'"
+                    )
+
             try:
                 is_dir = entry.is_dir(follow_symlinks=True)
-            except OSError:
-                continue
+            except OSError as exc:
+                raise OSError(f"Cannot determine directory status for '{entry_path}': {exc}")
 
             if is_dir:
                 child_status = walk_dir(entry_path, norm_rel)
@@ -110,8 +149,8 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
                     fst = entry.stat(follow_symlinks=True)
                     ext_attr = (fst.st_mode & 0xFFFF) << 16
                     size = fst.st_size
-                except OSError:
-                    continue
+                except OSError as exc:
+                    raise OSError(f"Cannot stat file '{entry_path}': {exc}")
 
                 if norm_rel in seen_rel_paths:
                     raise ValueError(f"Duplicate archive path detected: {norm_rel!r}")
@@ -141,7 +180,11 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
     return all_files, pure_empty_dirs
 
 
-def validate_zip_archive(zip_path: Path) -> dict:
+def validate_zip_archive(zip_path: Path, level: str = "full") -> dict:
+    level = (level or "quick").strip().lower()
+    if level not in ("quick", "full"):
+        raise ValueError(f"Invalid validation level '{level}'. Must be 'quick' or 'full'.")
+
     zip_path = Path(zip_path)
     if not zip_path.is_file():
         raise ValueError(f"ZIP archive does not exist: {zip_path}")
@@ -154,9 +197,10 @@ def validate_zip_archive(zip_path: Path) -> dict:
     populated_prefixes = set()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        bad_file = zf.testzip()
-        if bad_file is not None:
-            raise ValueError(f"ZIP CRC checksum failed on entry: {bad_file!r}")
+        if level == "full":
+            bad_file = zf.testzip()
+            if bad_file is not None:
+                raise ValueError(f"ZIP CRC checksum failed on entry: {bad_file!r}")
 
         for info in zf.infolist():
             raw_name = info.filename
@@ -194,6 +238,7 @@ def validate_zip_archive(zip_path: Path) -> dict:
             )
 
     return {
+        "level": level,
         "total_entries": len(seen_names),
         "file_entries": len(file_entries),
         "dir_entries": len(dir_entries),
@@ -202,20 +247,7 @@ def validate_zip_archive(zip_path: Path) -> dict:
 
 def _compute_source_fingerprint(source_dir: Path, exclude_paths=None) -> str:
     all_files, empty_dirs = _safe_walk_artifact_dir(source_dir, exclude_paths=exclude_paths)
-    all_files.sort(key=lambda x: x[1])
-    empty_dirs_sorted = sorted(empty_dirs)
-
-    h = hashlib.sha256()
-    h.update(b"V2_SAFE_ZIP_FP\0")
-    for d in empty_dirs_sorted:
-        h.update(f"D:{d}\0".encode())
-    for p, rel, _, size in all_files:
-        try:
-            mtime_ns = p.stat().st_mtime_ns
-            h.update(f"F:{rel}:{size}:{mtime_ns}\0".encode())
-        except OSError:
-            h.update(f"F:{rel}:{size}\0".encode())
-    return h.hexdigest()
+    return compute_manifest_fingerprint(all_files, empty_dirs)
 
 
 def _safe_pack_zip(output_zip: Path, all_files, empty_dirs, zip_mode: str, source_dir: Path):
@@ -235,15 +267,14 @@ def _safe_pack_zip(output_zip: Path, all_files, empty_dirs, zip_mode: str, sourc
     all_files.sort(key=lambda x: x[1])
     empty_dirs_sorted = sorted(empty_dirs)
 
-    temp_zip = output_zip.parent / f"{output_zip.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    pid_uuid = f"{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    temp_zip = output_zip.parent / f"{output_zip.name}.tmp.{pid_uuid}"
+    temp_meta = output_zip.parent / f"{output_zip.name}.metadata.json.tmp.{pid_uuid}"
 
     total_files = len(all_files)
     written_files = 0
     total_bytes = sum(size for _, _, _, size in all_files)
     max_mtime_ns = 0
-
-    fingerprint_hasher = hashlib.sha256()
-    fingerprint_hasher.update(b"V2_SAFE_ZIP_FP\0")
 
     print_progress(0, total_files, prefix="Writing zip", suffix="")
 
@@ -258,7 +289,6 @@ def _safe_pack_zip(output_zip: Path, all_files, empty_dirs, zip_mode: str, sourc
                 info.create_system = 3
                 info.external_attr = 0o755 << 16
                 zf.writestr(info, b"")
-                fingerprint_hasher.update(f"D:{d_name}\0".encode())
 
             # 2. Stream files
             for src_path, rel_name, ext_attr, size in all_files:
@@ -274,17 +304,21 @@ def _safe_pack_zip(output_zip: Path, all_files, empty_dirs, zip_mode: str, sourc
                 info.create_system = 3
                 info.external_attr = ext_attr or (0o644 << 16)
 
-                with open(src_path, "rb") as fsrc:
-                    with zf.open(info, "w", force_zip64=True) as fdst:
-                        shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
+                try:
+                    with open(src_path, "rb") as fsrc:
+                        with zf.open(info, "w", force_zip64=True) as fdst:
+                            shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
+                except OSError as exc:
+                    raise OSError(f"Failed to read file '{src_path}' during packaging: {exc}")
 
                 try:
                     st = src_path.stat()
+                    if st.st_size != size:
+                        raise OSError(f"File '{src_path}' was modified during packaging (size changed from {size} to {st.st_size})")
                     if st.st_mtime_ns > max_mtime_ns:
                         max_mtime_ns = st.st_mtime_ns
-                    fingerprint_hasher.update(f"F:{rel_name}:{size}:{st.st_mtime_ns}\0".encode())
-                except OSError:
-                    fingerprint_hasher.update(f"F:{rel_name}:{size}\0".encode())
+                except OSError as exc:
+                    raise OSError(f"Cannot stat file '{src_path}' during packaging: {exc}")
 
                 written_files += 1
                 display_name = rel_name if len(rel_name) <= 30 else "..." + rel_name[-27:]
@@ -294,31 +328,40 @@ def _safe_pack_zip(output_zip: Path, all_files, empty_dirs, zip_mode: str, sourc
         sys.stderr.write("\n")
         sys.stderr.flush()
 
-        # Self-validate temporary archive before atomic replacement
+        # Self-validate temporary archive before atomic replacement (full validation)
         if temp_zip.is_file():
-            validate_zip_archive(temp_zip)
-            os.replace(temp_zip, output_zip)
+            validate_zip_archive(temp_zip, level="full")
 
-        # Write metadata
-        metadata_file = output_zip.with_name(f"{output_zip.name}.metadata.json")
+        # Compute source fingerprint using unified function
+        source_fingerprint = compute_manifest_fingerprint(all_files, empty_dirs)
+
+        # Write metadata to temp_meta first
         meta_data = {
-            "packer_version": 2,
+            "packer_version": 3,
             "zip_mode": mode,
             "file_count": total_files,
             "total_size": total_bytes,
             "max_mtime_ns": max_mtime_ns,
             "source_dir": str(source_dir),
-            "fingerprint": fingerprint_hasher.hexdigest(),
+            "fingerprint": source_fingerprint,
         }
-        metadata_file.write_text(json.dumps(meta_data, indent=2) + "\n", encoding="utf-8")
+        temp_meta.write_text(json.dumps(meta_data, indent=2) + "\n", encoding="utf-8")
 
-    except Exception:
+        # Atomic commit: both archive and metadata
+        os.replace(temp_zip, output_zip)
+        os.replace(temp_meta, output_zip.with_name(f"{output_zip.name}.metadata.json"))
+
+    finally:
         if temp_zip.exists():
             try:
                 temp_zip.unlink()
             except OSError:
                 pass
-        raise
+        if temp_meta.exists():
+            try:
+                temp_meta.unlink()
+            except OSError:
+                pass
 
 
 def _walk_path_following_symlink_dirs(root: Path):
@@ -345,9 +388,174 @@ def cmd_read_state_value(state_file: str, key: str) -> int:
         print("")
         return 0
 
+    # If querying an artifact hash, verify it is in confirmed READY state
+    if key.endswith("_hash"):
+        art_id = key[:-5]
+        artifacts = data.get("artifacts", {})
+        if isinstance(artifacts, dict) and art_id in artifacts:
+            art = artifacts[art_id]
+            if art.get("status") == "READY":
+                val = art.get("source_fingerprint") or data.get(key, "")
+                print(val if isinstance(val, str) else "")
+                return 0
+            else:
+                # Not confirmed READY! Must not be treated as up to date!
+                print("")
+                return 0
+
     value = data.get(key, "")
     print(value if isinstance(value, str) else "")
     return 0
+
+
+def cmd_get_artifact_state(state_file: str, artifact_id: str) -> int:
+    state_path = Path(state_file)
+    if not state_path.is_file():
+        print(json.dumps({}))
+        return 0
+
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        print(json.dumps({}))
+        return 0
+
+    artifacts = state.get("artifacts", {})
+    if isinstance(artifacts, dict) and artifact_id in artifacts:
+        print(json.dumps(artifacts[artifact_id]))
+        return 0
+
+    legacy_hash = state.get(f"{artifact_id}_hash")
+    if legacy_hash:
+        print(json.dumps({"status": "READY", "source_fingerprint": legacy_hash}))
+        return 0
+
+    print(json.dumps({}))
+    return 0
+
+
+def cmd_set_artifact_state(
+    state_file: str,
+    artifact_id: str,
+    status: str,
+    source_fp: str = "",
+    archive_fp: str = "",
+    dataset_ref: str = "",
+    operation: str = "",
+    remote_version: str = "",
+) -> int:
+    state_path = Path(state_file).resolve()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state = {}
+    if state_path.is_file():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                state = {}
+        except Exception:
+            state = {}
+
+    state["version"] = 2
+    artifacts = state.setdefault("artifacts", {})
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+        state["artifacts"] = artifacts
+
+    art_record = artifacts.get(artifact_id, {})
+    if not isinstance(art_record, dict):
+        art_record = {}
+
+    import datetime
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    art_record["status"] = status
+    art_record["updated_at"] = now_iso
+    if source_fp:
+        art_record["source_fingerprint"] = source_fp
+    if archive_fp:
+        art_record["archive_fingerprint"] = archive_fp
+    if dataset_ref:
+        art_record["dataset_ref"] = dataset_ref
+    if operation:
+        art_record["operation"] = operation
+    if remote_version:
+        art_record["remote_version"] = remote_version
+
+    artifacts[artifact_id] = art_record
+
+    # If confirmed READY, update legacy hash key for backward compatibility
+    if status == "READY" and source_fp:
+        state[f"{artifact_id}_hash"] = source_fp
+
+    # Atomic write
+    temp_state = state_path.parent / f"{state_path.name}.tmp.{os.getpid()}"
+    temp_state.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp_state, state_path)
+    return 0
+
+
+def cmd_compute_source_fingerprint(source_path: str) -> int:
+    p = Path(source_path).resolve()
+    if not p.exists():
+        print(f"Error: path '{source_path}' does not exist.", file=sys.stderr)
+        return 1
+    if p.is_dir():
+        fp = _compute_source_fingerprint(p)
+    else:
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                h.update(chunk)
+        fp = h.hexdigest()
+    print(fp)
+    return 0
+
+
+def cmd_parse_kaggle_status(status_output: str, exit_code_str: str) -> int:
+    try:
+        exit_code = int(exit_code_str)
+    except (ValueError, TypeError):
+        exit_code = 1
+
+    raw = status_output or ""
+    # Redact any sensitive tokens/credentials
+    redacted = re.sub(r'(?i)(key|token|secret|password|bearer)[=:\s]+[A-Za-z0-9_-]{8,}', r'\1=***REDACTED***', raw)
+    text_lower = redacted.lower()
+
+    # 1. Authentication / Authorization error (401 / 403 / credentials)
+    if re.search(r'\b(401|403)\b', text_lower) or "unauthorized" in text_lower or "forbidden" in text_lower or "invalid credentials" in text_lower or "api key not found" in text_lower:
+        print(f"AUTH_ERROR: {redacted.strip()}")
+        return 30
+
+    # 2. Permanent Failure check (before checking ready!)
+    # Note: "already exists" contains substring "ready", so check error patterns FIRST!
+    if "already exists" in text_lower or "directory already exists" in text_lower or \
+       re.search(r'\b(failed|error|datasetfailed)\b', text_lower) or \
+       re.search(r'dataset (creation|version creation) error', text_lower):
+        print(f"FAILED: {redacted.strip()}")
+        return 20
+
+    # If exit code was nonzero:
+    if exit_code != 0:
+        if re.search(r'\b(timeout|timed out|connection reset|temporarily unavailable|500|502|503|504)\b', text_lower):
+            print(f"TRANSIENT_ERROR: {redacted.strip()}")
+            return 50
+        print(f"FAILED: {redacted.strip()}")
+        return 20
+
+    # 3. Confirmed READY (exact word boundary \bready\b)
+    if re.search(r'\bready\b', text_lower) and "already" not in text_lower:
+        print("READY")
+        return 0
+
+    # 4. In-progress / Pending / Processing
+    if re.search(r'\b(pending|processing|processed|queued|creating|uploading)\b', text_lower) or "being processed" in text_lower:
+        print("PROCESSING")
+        return 10
+
+    # 5. Unknown response
+    print(f"UNKNOWN: {redacted.strip()}")
+    return 40
 
 
 def cmd_read_artifact_settings(metadata_file: str) -> int:
@@ -532,27 +740,27 @@ def cmd_check_zip_cache(source_dir: str, output_zip: str) -> int:
 
     if not output.is_file():
         print("invalid")
-        return 2
+        return 0
 
     try:
-        validate_zip_archive(output)
+        validate_zip_archive(output, level="quick")
     except Exception:
         print("invalid")
-        return 2
+        return 0
 
     if not metadata_file.is_file():
         print("changed")
-        return 1
+        return 0
 
     try:
         meta = json.loads(metadata_file.read_text(encoding="utf-8"))
     except Exception:
         print("invalid")
-        return 2
+        return 0
 
-    if meta.get("packer_version") != 2:
+    if meta.get("packer_version") not in (2, 3):
         print("changed")
-        return 1
+        return 0
 
     try:
         current_fp = _compute_source_fingerprint(source, exclude_paths=[output])
@@ -561,20 +769,20 @@ def cmd_check_zip_cache(source_dir: str, output_zip: str) -> int:
             return 0
         else:
             print("changed")
-            return 1
+            return 0
     except Exception:
         print("invalid")
-        return 2
+        return 0
 
 
-def cmd_validate_artifact_archive(zip_path: str, metadata_file: str = "", source_dir: str = "") -> int:
+def cmd_validate_artifact_archive(zip_path: str, metadata_file: str = "", source_dir: str = "", level: str = "quick") -> int:
     p_zip = Path(zip_path)
     if not p_zip.is_file():
         print(f"ERROR: Dataset archive validation failed.\nReason: Archive file does not exist\nPath: {zip_path}", file=sys.stderr)
         return 1
 
     try:
-        stats = validate_zip_archive(p_zip)
+        stats = validate_zip_archive(p_zip, level=level)
     except ValueError as exc:
         print(f"ERROR: Dataset archive validation failed.\nReason: {exc}\nPath: {zip_path}", file=sys.stderr)
         return 1
@@ -946,13 +1154,52 @@ def main() -> int:
     p_vaa.add_argument("zip_path")
     p_vaa.add_argument("metadata_file", nargs="?", default="")
     p_vaa.add_argument("source_dir", nargs="?", default="")
+    p_vaa.add_argument("--level", choices=["quick", "full"], default="quick")
+
+    p_csf = sub.add_parser("compute-source-fingerprint")
+    p_csf.add_argument("source_path")
+
+    p_pks = sub.add_parser("parse-kaggle-status")
+    p_pks.add_argument("status_output")
+    p_pks.add_argument("exit_code")
+
+    p_ssa = sub.add_parser("set-artifact-state")
+    p_ssa.add_argument("state_file")
+    p_ssa.add_argument("artifact_id")
+    p_ssa.add_argument("status")
+    p_ssa.add_argument("--source-fp", default="")
+    p_ssa.add_argument("--archive-fp", default="")
+    p_ssa.add_argument("--dataset-ref", default="")
+    p_ssa.add_argument("--operation", default="")
+    p_ssa.add_argument("--remote-version", default="")
+
+    p_gsa = sub.add_parser("get-artifact-state")
+    p_gsa.add_argument("state_file")
+    p_gsa.add_argument("artifact_id")
 
     args = parser.parse_args()
 
     if args.command == "check-zip-cache":
         return cmd_check_zip_cache(args.source_dir, args.output_zip)
     if args.command == "validate-artifact-archive":
-        return cmd_validate_artifact_archive(args.zip_path, args.metadata_file, args.source_dir)
+        return cmd_validate_artifact_archive(args.zip_path, args.metadata_file, args.source_dir, level=args.level)
+    if args.command == "compute-source-fingerprint":
+        return cmd_compute_source_fingerprint(args.source_path)
+    if args.command == "parse-kaggle-status":
+        return cmd_parse_kaggle_status(args.status_output, args.exit_code)
+    if args.command == "set-artifact-state":
+        return cmd_set_artifact_state(
+            args.state_file,
+            args.artifact_id,
+            args.status,
+            source_fp=args.source_fp,
+            archive_fp=args.archive_fp,
+            dataset_ref=args.dataset_ref,
+            operation=args.operation,
+            remote_version=args.remote_version,
+        )
+    if args.command == "get-artifact-state":
+        return cmd_get_artifact_state(args.state_file, args.artifact_id)
 
     if args.command == "read-state-value":
         return cmd_read_state_value(args.state_file, args.key)
