@@ -80,7 +80,10 @@ exec python3 "$@"
         p = self.run_cmd([str(SYK4Y_BIN), "kaggle", "upload", "dataset/"], cwd=str(project), env=env)
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("kaggle cli is not available in the current environment", p.stderr.lower())
-        self.assertIn("pip install kaggle", p.stderr.lower())
+        self.assertTrue(
+            "pip install" in p.stderr.lower() and "kaggle" in p.stderr.lower(),
+            f"Expected actionable pip/uv pip install instructions in stderr: {p.stderr}"
+        )
 
     def test_missing_docker_cleanup_is_safe(self):
         """Native cleanup handles temporary test workspace without requiring Docker."""

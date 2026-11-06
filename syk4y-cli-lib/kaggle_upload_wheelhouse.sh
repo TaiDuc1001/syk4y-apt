@@ -91,7 +91,16 @@ build_wheelhouse_if_needed() {
         if ! uv export \
           --project "$REPO_ROOT" \
           --locked \
-          --format requirements.txt \
+          --format requirements-txt \
+          --no-hashes \
+          --no-header \
+          --no-annotate \
+          --no-editable \
+          --no-emit-project \
+          --output-file "$host_req_out" 2>/dev/null && \
+           ! uv export \
+          --project "$REPO_ROOT" \
+          --locked \
           --no-hashes \
           --no-header \
           --no-annotate \
@@ -351,7 +360,16 @@ build_wheelhouse_if_needed() {
     if ! uv export \
       --project "$REPO_ROOT" \
       --locked \
-      --format requirements.txt \
+      --format requirements-txt \
+      --no-hashes \
+      --no-header \
+      --no-annotate \
+      --no-editable \
+      --no-emit-project \
+      --output-file "$req_out" 2>/dev/null && \
+       ! uv export \
+      --project "$REPO_ROOT" \
+      --locked \
       --no-hashes \
       --no-header \
       --no-annotate \
