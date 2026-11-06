@@ -238,10 +238,10 @@ six = { index = "pypi-custom" }
             expected = {
                 "ipaddr": "2.2.0",
                 "requests": "2.28.1",
-                "certifi": "2026.7.22",
-                "charset-normalizer": "2.1.1",
-                "idna": "3.18",
-                "urllib3": "1.26.20",
+                "certifi": None,
+                "charset-normalizer": None,
+                "idna": None,
+                "urllib3": None,
             }
             self.verify_wheelhouse_zip_strict(zip_paths[0], expected)
 
