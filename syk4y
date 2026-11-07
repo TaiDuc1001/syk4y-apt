@@ -61,6 +61,12 @@ case "$command" in
   migrate-layout)
     exec "$SCRIPT_DIR/syk4y-migrate-layout" --repo-root "$repo_root" "$@"
     ;;
+  update)
+    exec "$SCRIPT_DIR/syk4y-update" "$@"
+    ;;
+  version|-v|--version)
+    exec "$SCRIPT_DIR/syk4y-update" --version
+    ;;
   help|-h|--help)
     usage
     ;;

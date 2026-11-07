@@ -1,0 +1,17 @@
+syk4y update - Check for and install updates to syk4y
+
+Usage:
+  syk4y update [options]
+  syk4y-update [options]
+
+Options:
+  -c, --check       Check for available updates without applying them
+  -y, --yes         Apply updates without confirmation prompt
+  -f, --force       Force update even if local files are modified
+  --branch BRANCH   Track and update to a specific git branch (default: current branch)
+  --tag TAG         Update to a specific release tag
+  --remote REMOTE   Git remote to fetch from (default: origin)
+  --dry-run         Simulate update actions without modifying files
+  --json            Output update status as JSON
+  -v, --version     Show current version/commit of syk4y
+  -h, --help        Show this help

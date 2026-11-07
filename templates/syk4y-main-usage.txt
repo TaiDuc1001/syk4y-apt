@@ -9,6 +9,7 @@ Commands:
   kaggle         Kaggle helpers (login/upload/account/run)
   doctor         Check environment and repository readiness
   migrate-layout Inspect and safely migrate legacy nested kaggle_upload layouts
+  update         Check for and install updates to syk4y
   help           Show this help
 
 Global options:

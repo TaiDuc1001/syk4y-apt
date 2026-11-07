@@ -56,7 +56,7 @@ command -v pkgbuild >/dev/null 2>&1 || {
   exit 1
 }
 
-REQUIRED_SCRIPTS=(syk4y syk4y-init syk4y-gen syk4y-kaggle syk4y-doctor syk4y-migrate-layout)
+REQUIRED_SCRIPTS=(syk4y syk4y-init syk4y-gen syk4y-kaggle syk4y-doctor syk4y-migrate-layout syk4y-update)
 REQUIRED_DIRS=(syk4y-lib syk4y-cli-lib templates)
 for path in "${REQUIRED_SCRIPTS[@]}" "${REQUIRED_DIRS[@]}"; do
   [[ -e "$ROOT_DIR/$path" ]] || { echo "Error: missing required path '$path'." >&2; exit 1; }

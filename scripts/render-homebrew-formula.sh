@@ -72,7 +72,7 @@ class Syk4y < Formula
   depends_on "bash"
 
   def install
-    libexec.install "syk4y", "syk4y-init", "syk4y-gen", "syk4y-kaggle", "syk4y-doctor"
+    libexec.install "syk4y", "syk4y-init", "syk4y-gen", "syk4y-kaggle", "syk4y-doctor", "syk4y-migrate-layout", "syk4y-update"
     libexec.install "syk4y-lib", "syk4y-cli-lib", "templates"
 
     command_targets = {
@@ -81,6 +81,8 @@ class Syk4y < Formula
       "syk4y-gen" => "syk4y-gen",
       "syk4y-kaggle" => "syk4y-kaggle",
       "syk4y-doctor" => "syk4y-doctor",
+      "syk4y-migrate-layout" => "syk4y-migrate-layout",
+      "syk4y-update" => "syk4y-update",
       "make-gen-full-repo.sh" => "syk4y-gen",
     }
 

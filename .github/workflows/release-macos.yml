@@ -51,7 +51,7 @@ jobs:
       - name: Bash syntax check
         shell: bash
         run: |
-          bash -n syk4y syk4y-init syk4y-gen syk4y-kaggle syk4y-doctor syk4y-migrate-layout syk4y-cli-lib/*.sh scripts/*.sh
+          bash -n syk4y syk4y-init syk4y-gen syk4y-kaggle syk4y-doctor syk4y-migrate-layout syk4y-update syk4y-cli-lib/*.sh scripts/*.sh
 
       - name: Run test suite
         shell: bash
