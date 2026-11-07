@@ -46,12 +46,31 @@ kaggle_zip() (
 
     source_path="$(artifact_source_path "$artifact_id")"
     if [[ -d "$source_path" && "$DIR_MODE" == "zip" ]]; then
+      # Run preflight check before expensive zip creation
+      local preflight_cmd=("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" preflight-dataset "$source_path")
+      if [[ -n "$REPORT_PATH" ]]; then
+        preflight_cmd+=(--report "$REPORT_PATH")
+      fi
+      for pat in "${EXCLUDE_PATTERNS[@]}"; do
+        preflight_cmd+=(--exclude "$pat")
+      done
+      if ! "${preflight_cmd[@]}"; then
+        echo "Error: dataset preflight failed for artifact '$artifact_id'." >&2
+        return 1
+      fi
+
       cache_file="$cache_dir/${artifact_id}.zip"
+      local check_cache_cmd=(
+        "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py"
+        check-zip-cache
+        "$source_path"
+        "$cache_file"
+      )
+      for pat in "${EXCLUDE_PATTERNS[@]}"; do
+        check_cache_cmd+=(--exclude "$pat")
+      done
       local cache_status
-      cache_status="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-        check-zip-cache \
-        "$source_path" \
-        "$cache_file" 2>/dev/null || echo "invalid")"
+      cache_status="$("${check_cache_cmd[@]}" 2>/dev/null || echo "invalid")"
 
       if [[ "$FORCE_UPLOAD" -eq 0 && "$cache_status" == "valid" ]]; then
         echo "Cache valid: reusing $(basename "$cache_file")"
@@ -62,12 +81,24 @@ kaggle_zip() (
           echo "Cache invalid: rebuilding $(basename "$cache_file")"
         fi
 
-        if "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-          pack-artifact-dir-zip \
-          "$source_path" \
-          "$cache_file" \
-          "$ARTIFACT_ZIP_MODE" \
-          "${force_args[@]}"; then
+        local pack_cmd=(
+          "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py"
+          pack-artifact-dir-zip
+          "$source_path"
+          "$cache_file"
+          "$ARTIFACT_ZIP_MODE"
+        )
+        if [[ -n "$REPORT_PATH" ]]; then
+          pack_cmd+=(--report "$REPORT_PATH")
+        fi
+        for pat in "${EXCLUDE_PATTERNS[@]}"; do
+          pack_cmd+=(--exclude "$pat")
+        done
+        if [[ "$FORCE_UPLOAD" -eq 1 ]]; then
+          pack_cmd+=(--force)
+        fi
+
+        if "${pack_cmd[@]}"; then
           any_zipped=1
         else
           echo "Error: failed to zip '$artifact_id'" >&2

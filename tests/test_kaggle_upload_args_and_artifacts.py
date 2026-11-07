@@ -91,6 +91,9 @@ echo "ARTIFACT_ZIP_MODE=$ARTIFACT_ZIP_MODE"
 set -euo pipefail
 if [[ "${1:-}" == *"/kaggle_upload_py_cli.py" ]]; then
   case "${2:-}" in
+    preflight-dataset)
+      exit 0
+      ;;
     pack-artifact-dir-zip)
       printf 'PACK_MODE=%s\\n' "$5" >> "$CALL_LOG"
       printf 'zip-data\\n' > "$4"

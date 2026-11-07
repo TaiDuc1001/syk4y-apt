@@ -26,6 +26,8 @@ source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_upload.sh"
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_zip.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_validate.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/syk4y-cli-lib/kaggle_preflight.sh"
 
 usage() {
   cat "$SCRIPT_DIR/templates/kaggle-main-usage.txt"
@@ -67,6 +69,9 @@ main() {
       ;;
     validate)
       kaggle_validate --repo-root "$repo_root" "$@"
+      ;;
+    preflight|check)
+      kaggle_preflight --repo-root "$repo_root" "$@"
       ;;
     account)
       exec "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/account_cli.py" "$@"

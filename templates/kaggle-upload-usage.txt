@@ -11,6 +11,8 @@ Options:
   --build-wheel-only    Build/update wheelhouse.zip only, skip Kaggle upload
   --arch ARCH           Target architecture for wheelhouse: native|x86_64|aarch64 (default: native)
   --wheel-arch ARCH     (Deprecated) Alias for --arch
+  --exclude PATTERN     Exclude dataset paths matching glob or prefix (can be repeated)
+  --report FILE         Save JSON diagnostic report to FILE
   --repo-root DIR       Target repository root (default: current directory)
   -h, --help            Show this help
 

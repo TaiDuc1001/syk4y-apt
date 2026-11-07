@@ -2,6 +2,9 @@ import argparse
 import binascii
 import concurrent.futures
 import csv
+import datetime
+import errno
+import fnmatch
 import io
 import json
 import os
@@ -58,11 +61,272 @@ def compute_manifest_fingerprint(all_files: list, empty_dirs: set) -> str:
     return h.hexdigest()
 
 
-def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
+def _is_path_excluded(rel_path: str, name: str, exclude_patterns: list[str] | None, source_name: str = "") -> bool:
+    if not exclude_patterns:
+        return False
+    clean_rel = rel_path.replace("\\", "/").strip("/")
+    for pat in exclude_patterns:
+        pat = pat.replace("\\", "/").strip()
+        if not pat:
+            continue
+        candidates = [pat.strip("/")]
+        if source_name and candidates[0].startswith(source_name + "/"):
+            candidates.append(candidates[0][len(source_name) + 1:].strip("/"))
+
+        for clean_pat in candidates:
+            if clean_rel == clean_pat or clean_rel.startswith(clean_pat + "/"):
+                return True
+            if fnmatch.fnmatch(clean_rel, clean_pat) or fnmatch.fnmatch(clean_rel, clean_pat + "/*"):
+                return True
+            if fnmatch.fnmatch(name, clean_pat):
+                return True
+    return False
+
+
+def preflight_dataset(
+    source_dir: Path,
+    exclude_patterns: list[str] | None = None,
+    report_path: str | None = None,
+    quiet: bool = False,
+) -> tuple[bool, dict]:
+    source_dir = Path(source_dir).resolve()
+    if not source_dir.is_dir():
+        raise ValueError(f"Source directory does not exist or is not a directory: '{source_dir}'")
+
+    source_name = source_dir.name
+    exclude_patterns = [p.strip() for p in (exclude_patterns or []) if p.strip()]
+
+    total_files = 0
+    total_dirs = 0
+    total_symlinks = 0
+    valid_symlinks = 0
+    broken_symlinks = []     # list of {"link": str, "target": str, "reason": str}
+    external_symlinks = []   # list of {"link": str, "target": str, "reason": str}
+    circular_symlinks = []   # list of {"link": str, "target": str, "reason": str}
+    excluded_entries = []    # list of str (relative paths)
+
+    visited_dir_keys = set()
+    dir_stack = []
+
+    def scan_dir(curr_dir: Path, rel_prefix: str):
+        nonlocal total_files, total_dirs, total_symlinks, valid_symlinks
+
+        try:
+            st = curr_dir.stat()
+        except OSError as exc:
+            broken_symlinks.append({
+                "link": rel_prefix or curr_dir.name,
+                "target": str(curr_dir),
+                "reason": f"Cannot stat directory: {exc}"
+            })
+            return
+
+        dir_key = (st.st_dev, st.st_ino)
+        if dir_key in visited_dir_keys:
+            return
+        visited_dir_keys.add(dir_key)
+        dir_stack.append(curr_dir.resolve())
+
+        try:
+            entries = sorted(os.scandir(curr_dir), key=lambda e: (e.is_symlink(), e.name))
+        except OSError as exc:
+            broken_symlinks.append({
+                "link": rel_prefix or curr_dir.name,
+                "target": str(curr_dir),
+                "reason": f"Cannot read directory: {exc}"
+            })
+            dir_stack.pop()
+            return
+
+        for entry in entries:
+            name = entry.name
+            if name in {".syk4y-temp", ".upload.lock"} or name.startswith(".syk4y-"):
+                continue
+
+            rel_path = f"{rel_prefix}/{name}" if rel_prefix else name
+            norm_rel = _normalize_archive_relpath(rel_path)
+
+            if _is_path_excluded(norm_rel, name, exclude_patterns, source_name=source_name):
+                excluded_entries.append(norm_rel)
+                continue
+
+            entry_path = Path(entry.path)
+
+            if entry.is_symlink():
+                total_symlinks += 1
+                try:
+                    raw_target = os.readlink(entry_path)
+                except OSError as exc:
+                    broken_symlinks.append({
+                        "link": norm_rel,
+                        "target": "<unreadable>",
+                        "reason": f"Cannot readlink: {exc}"
+                    })
+                    continue
+
+                try:
+                    resolved_target = entry_path.resolve(strict=True)
+                except FileNotFoundError:
+                    broken_symlinks.append({
+                        "link": norm_rel,
+                        "target": raw_target,
+                        "reason": "Target does not exist (dangling symlink)"
+                    })
+                    continue
+                except OSError as exc:
+                    if exc.errno == errno.ELOOP or "too many levels" in str(exc).lower():
+                        circular_symlinks.append({
+                            "link": norm_rel,
+                            "target": raw_target,
+                            "reason": "Symlink loop / cycle detected"
+                        })
+                    else:
+                        broken_symlinks.append({
+                            "link": norm_rel,
+                            "target": raw_target,
+                            "reason": str(exc)
+                        })
+                    continue
+                except RuntimeError as exc:
+                    circular_symlinks.append({
+                        "link": norm_rel,
+                        "target": raw_target,
+                        "reason": "Symlink loop / cycle detected"
+                    })
+                    continue
+
+                # Target resolved, check if within source_dir
+                try:
+                    resolved_target.relative_to(source_dir)
+                except ValueError:
+                    external_symlinks.append({
+                        "link": norm_rel,
+                        "target": str(resolved_target),
+                        "reason": f"Points outside dataset root ({source_dir})"
+                    })
+                    continue
+
+                valid_symlinks += 1
+
+                try:
+                    is_symlink_dir = entry.is_dir(follow_symlinks=True)
+                except OSError:
+                    is_symlink_dir = False
+
+                if is_symlink_dir:
+                    try:
+                        st_target = resolved_target.stat()
+                        target_key = (st_target.st_dev, st_target.st_ino)
+                    except OSError:
+                        target_key = None
+
+                    if target_key and target_key not in visited_dir_keys:
+                        total_dirs += 1
+                        scan_dir(entry_path, norm_rel)
+                else:
+                    total_files += 1
+
+            elif entry.is_dir():
+                total_dirs += 1
+                scan_dir(entry_path, norm_rel)
+            else:
+                total_files += 1
+
+        dir_stack.pop()
+
+    scan_dir(source_dir, "")
+
+    is_valid = (
+        len(broken_symlinks) == 0
+        and len(external_symlinks) == 0
+        and len(circular_symlinks) == 0
+    )
+
+    report = {
+        "source_dir": str(source_dir),
+        "status": "PASSED" if is_valid else "FAILED",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "is_valid": is_valid,
+        "summary": {
+            "total_files": total_files,
+            "total_dirs": total_dirs,
+            "total_symlinks": total_symlinks,
+            "valid_symlinks": valid_symlinks,
+            "broken_symlinks_count": len(broken_symlinks),
+            "external_symlinks_count": len(external_symlinks),
+            "circular_symlinks_count": len(circular_symlinks),
+            "excluded_count": len(excluded_entries),
+        },
+        "broken_symlinks": broken_symlinks,
+        "external_symlinks": external_symlinks,
+        "circular_symlinks": circular_symlinks,
+        "excluded_entries": excluded_entries,
+    }
+
+    if report_path:
+        p_rep = Path(report_path).resolve()
+        p_rep.parent.mkdir(parents=True, exist_ok=True)
+        p_rep.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    return is_valid, report
+
+
+def format_preflight_summary(report: dict) -> str:
+    summary = report["summary"]
+    is_valid = report["is_valid"]
+    source_dir = report["source_dir"]
+    lines = []
+    lines.append(f"=== Dataset Preflight Check: {source_dir} ===")
+    lines.append(f"Status: {'PASSED' if is_valid else 'FAILED'}")
+    lines.append("Summary:")
+    lines.append(f"  Files: {summary['total_files']}")
+    lines.append(f"  Directories: {summary['total_dirs']}")
+    lines.append(
+        f"  Symlinks: {summary['total_symlinks']} total ("
+        f"{summary['valid_symlinks']} valid, "
+        f"{summary['broken_symlinks_count']} broken, "
+        f"{summary['external_symlinks_count']} external, "
+        f"{summary['circular_symlinks_count']} circular)"
+    )
+    if summary["excluded_count"] > 0:
+        lines.append(f"  Excluded: {summary['excluded_count']} entries")
+
+    def format_representative(items: list[dict], title: str, max_show: int = 5):
+        if not items:
+            return
+        lines.append(f"\n{title} ({len(items)} found):")
+        for item in items[:max_show]:
+            lines.append(f"  - {item['link']} -> {item['target']}")
+        if len(items) > max_show:
+            lines.append(f"  ... (and {len(items) - max_show} more)")
+
+    format_representative(report["broken_symlinks"], "Broken / Dangling Symlinks")
+    format_representative(report["external_symlinks"], "External / Escaping Symlinks")
+    format_representative(report["circular_symlinks"], "Circular / Looping Symlinks")
+
+    if report["excluded_entries"]:
+        lines.append(f"\nExcluded Entries ({len(report['excluded_entries'])}):")
+        for e in report["excluded_entries"][:5]:
+            lines.append(f"  - [EXCLUDED] {e}")
+        if len(report["excluded_entries"]) > 5:
+            lines.append(f"  ... (and {len(report['excluded_entries']) - 5} more)")
+
+    if not is_valid:
+        lines.append("\nError: Dataset preflight failed. Invalid symlinks would cause Kaggle ingestion failures.")
+        lines.append("To resolve:")
+        lines.append("  1. Restore missing target files, or")
+        lines.append("  2. Explicitly exclude omitted subsets using --exclude '<pattern>', or")
+        lines.append("  3. Remove broken or external symlinks from the dataset.")
+
+    return "\n".join(lines)
+
+
+def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None, exclude_patterns=None):
     source_dir = Path(source_dir).resolve()
     if not source_dir.is_dir():
         raise ValueError(f"Source directory does not exist or is not a directory: {source_dir}")
 
+    source_name = source_dir.name
     exclude_realpaths = set()
     if exclude_paths:
         for p in exclude_paths:
@@ -112,6 +376,9 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
             rel_path = f"{rel_prefix}/{name}" if rel_prefix else name
             norm_rel = _normalize_archive_relpath(rel_path)
 
+            if _is_path_excluded(norm_rel, name, exclude_patterns, source_name=source_name):
+                continue
+
             # Strict symlink policy (P0-D):
             # 1. Reject links pointing outside source directory
             # 2. Reject dangling symlinks
@@ -123,7 +390,13 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None):
                     target_dest = os.readlink(entry_path)
                     raise ValueError(f"Dangling symlink detected: '{entry_path}' points to non-existent target '{target_dest}'")
                 except OSError as exc:
+                    if exc.errno == errno.ELOOP or "too many levels" in str(exc).lower():
+                        target_dest = os.readlink(entry_path)
+                        raise ValueError(f"Circular symlink loop detected: '{entry_path}' points to '{target_dest}'")
                     raise ValueError(f"Cannot resolve symlink '{entry_path}': {exc}")
+                except RuntimeError as exc:
+                    target_dest = os.readlink(entry_path)
+                    raise ValueError(f"Circular symlink loop detected: '{entry_path}' points to '{target_dest}'")
 
                 try:
                     resolved_target.relative_to(source_dir)
@@ -245,12 +518,24 @@ def validate_zip_archive(zip_path: Path, level: str = "full") -> dict:
     }
 
 
-def _compute_source_fingerprint(source_dir: Path, exclude_paths=None) -> str:
-    all_files, empty_dirs = _safe_walk_artifact_dir(source_dir, exclude_paths=exclude_paths)
+def _compute_source_fingerprint(source_dir: Path, exclude_paths=None, exclude_patterns=None) -> str:
+    all_files, empty_dirs = _safe_walk_artifact_dir(
+        source_dir,
+        exclude_paths=exclude_paths,
+        exclude_patterns=exclude_patterns,
+    )
     return compute_manifest_fingerprint(all_files, empty_dirs)
 
 
-def _safe_pack_zip(output_zip: Path, all_files, empty_dirs, zip_mode: str, source_dir: Path):
+def _safe_pack_zip(
+    output_zip: Path,
+    all_files,
+    empty_dirs,
+    zip_mode: str,
+    source_dir: Path,
+    exclude_patterns=None,
+    expected_fp: str = "",
+):
     output_zip = Path(output_zip).resolve()
     output_zip.parent.mkdir(parents=True, exist_ok=True)
 
@@ -334,6 +619,28 @@ def _safe_pack_zip(output_zip: Path, all_files, empty_dirs, zip_mode: str, sourc
 
         # Compute source fingerprint using unified function
         source_fingerprint = compute_manifest_fingerprint(all_files, empty_dirs)
+
+        # Detect changes between initial fingerprinting and packaging
+        if expected_fp and source_fingerprint != expected_fp:
+            raise OSError(
+                f"Source dataset modified between initial check and packaging:\n"
+                f"  Expected fingerprint: {expected_fp}\n"
+                f"  Found fingerprint:    {source_fingerprint}"
+            )
+
+        # Verify files on disk didn't change while packaging was in progress
+        post_files, post_empty = _safe_walk_artifact_dir(
+            source_dir,
+            exclude_paths=[temp_zip, output_zip],
+            exclude_patterns=exclude_patterns,
+        )
+        post_disk_fp = compute_manifest_fingerprint(post_files, post_empty)
+        if post_disk_fp != source_fingerprint:
+            raise OSError(
+                f"Source files were modified during packaging:\n"
+                f"  Pre-pack fingerprint:  {source_fingerprint}\n"
+                f"  Post-pack fingerprint: {post_disk_fp}"
+            )
 
         # Write metadata to temp_meta first
         meta_data = {
@@ -494,21 +801,28 @@ def cmd_set_artifact_state(
     return 0
 
 
-def cmd_compute_source_fingerprint(source_path: str) -> int:
-    p = Path(source_path).resolve()
-    if not p.exists():
-        print(f"Error: path '{source_path}' does not exist.", file=sys.stderr)
+def cmd_compute_source_fingerprint(source_path: str, exclude_patterns: list[str] | None = None) -> int:
+    try:
+        p = Path(source_path).resolve()
+        if not p.exists():
+            print(f"Error: path '{source_path}' does not exist.", file=sys.stderr)
+            return 1
+        if p.is_dir():
+            fp = _compute_source_fingerprint(p, exclude_patterns=exclude_patterns)
+        else:
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    h.update(chunk)
+            fp = h.hexdigest()
+        print(fp)
+        return 0
+    except (ValueError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
-    if p.is_dir():
-        fp = _compute_source_fingerprint(p)
-    else:
-        h = hashlib.sha256()
-        with open(p, "rb") as f:
-            while chunk := f.read(1024 * 1024):
-                h.update(chunk)
-        fp = h.hexdigest()
-    print(fp)
-    return 0
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
 
 def cmd_parse_kaggle_status(status_output: str, exit_code_str: str) -> int:
@@ -738,30 +1052,113 @@ def cmd_pack_wheelhouse_zip(source_dir: str, output_zip: str, zip_mode: str) -> 
     return 0
 
 
-def cmd_pack_artifact_dir_zip(source_dir: str, output_zip: str, zip_mode: str, force: bool = False) -> int:
-    source = Path(source_dir).resolve()
-    output = Path(output_zip).resolve()
-
-    if not source.exists():
-        print(f"Error: source directory '{source_dir}' does not exist.", file=sys.stderr)
-        return 1
-
+def cmd_preflight_dataset(
+    source_dir: str,
+    report_path: str = "",
+    exclude_patterns: list[str] | None = None,
+    quiet: bool = False,
+) -> int:
     try:
-        all_files, empty_dirs = _safe_walk_artifact_dir(source, exclude_paths=[output])
+        source = Path(source_dir).resolve()
+        if not source.exists():
+            print(f"Error: source directory '{source_dir}' does not exist.", file=sys.stderr)
+            return 1
+        if not source.is_dir():
+            print(f"Error: source path '{source_dir}' is not a directory.", file=sys.stderr)
+            return 1
+
+        is_valid, report = preflight_dataset(
+            source,
+            exclude_patterns=exclude_patterns,
+            report_path=report_path or None,
+            quiet=quiet,
+        )
+
+        if not quiet:
+            summary_text = format_preflight_summary(report)
+            if is_valid:
+                print(summary_text)
+            else:
+                print(summary_text, file=sys.stderr)
+
+        return 0 if is_valid else 1
+    except (ValueError, OSError) as exc:
+        print(f"Error during dataset preflight: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
-        print(f"Error during directory scanning: {exc}", file=sys.stderr)
+        print(f"Error during dataset preflight: {exc}", file=sys.stderr)
         return 1
 
+
+def cmd_pack_artifact_dir_zip(
+    source_dir: str,
+    output_zip: str,
+    zip_mode: str,
+    force: bool = False,
+    exclude_patterns: list[str] | None = None,
+    expected_fp: str = "",
+    report_path: str = "",
+) -> int:
     try:
-        _safe_pack_zip(output, all_files, empty_dirs, zip_mode, source)
+        source = Path(source_dir).resolve()
+        output = Path(output_zip).resolve()
+
+        if not source.exists():
+            print(f"Error: source directory '{source_dir}' does not exist.", file=sys.stderr)
+            return 1
+        if not source.is_dir():
+            print(f"Error: source path '{source_dir}' is not a directory.", file=sys.stderr)
+            return 1
+
+        # 1. Run read-only dataset preflight check before expensive packing
+        is_valid, report = preflight_dataset(
+            source,
+            exclude_patterns=exclude_patterns,
+            report_path=report_path or None,
+            quiet=False,
+        )
+        if not is_valid:
+            print(format_preflight_summary(report), file=sys.stderr)
+            return 1
+
+        # 2. Collect files and check against expected fingerprint if provided
+        all_files, empty_dirs = _safe_walk_artifact_dir(
+            source,
+            exclude_paths=[output],
+            exclude_patterns=exclude_patterns,
+        )
+
+        if expected_fp:
+            actual_prepack_fp = compute_manifest_fingerprint(all_files, empty_dirs)
+            if actual_prepack_fp != expected_fp:
+                print(
+                    f"Error: source dataset modified between fingerprinting and packaging:\n"
+                    f"  Expected fingerprint: {expected_fp}\n"
+                    f"  Found fingerprint:    {actual_prepack_fp}",
+                    file=sys.stderr,
+                )
+                return 1
+
+        # 3. Pack zip safely to temp file, validate, and atomically replace
+        _safe_pack_zip(
+            output,
+            all_files,
+            empty_dirs,
+            zip_mode,
+            source,
+            exclude_patterns=exclude_patterns,
+            expected_fp=expected_fp,
+        )
+        return 0
+    except (ValueError, OSError) as exc:
+        print(f"Error: failed to create ZIP archive '{output_zip}': {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"Error: failed to create ZIP archive '{output_zip}': {exc}", file=sys.stderr)
         return 1
 
-    return 0
 
-
-def cmd_check_zip_cache(source_dir: str, output_zip: str) -> int:
+def cmd_check_zip_cache(source_dir: str, output_zip: str, exclude_patterns: list[str] | None = None) -> int:
     source = Path(source_dir).resolve()
     output = Path(output_zip).resolve()
     metadata_file = output.with_name(f"{output.name}.metadata.json")
@@ -791,7 +1188,11 @@ def cmd_check_zip_cache(source_dir: str, output_zip: str) -> int:
         return 0
 
     try:
-        current_fp = _compute_source_fingerprint(source, exclude_paths=[output])
+        current_fp = _compute_source_fingerprint(
+            source,
+            exclude_paths=[output],
+            exclude_patterns=exclude_patterns,
+        )
         if current_fp == meta.get("fingerprint"):
             print("valid")
             return 0
@@ -1148,6 +1549,15 @@ def main() -> int:
     p_paz.add_argument("output_zip")
     p_paz.add_argument("zip_mode")
     p_paz.add_argument("--force", action="store_true")
+    p_paz.add_argument("--exclude", action="append", default=[], dest="exclude_patterns")
+    p_paz.add_argument("--expected-fp", default="", dest="expected_fp")
+    p_paz.add_argument("--report", default="", dest="report_path")
+
+    p_pfd = sub.add_parser("preflight-dataset")
+    p_pfd.add_argument("source_dir")
+    p_pfd.add_argument("--report", default="", dest="report_path")
+    p_pfd.add_argument("--exclude", action="append", default=[], dest="exclude_patterns")
+    p_pfd.add_argument("--quiet", action="store_true")
 
     p_edr = sub.add_parser("extract-dataset-ref")
     p_edr.add_argument("metadata_file")
@@ -1177,6 +1587,7 @@ def main() -> int:
     p_czc = sub.add_parser("check-zip-cache")
     p_czc.add_argument("source_dir")
     p_czc.add_argument("output_zip")
+    p_czc.add_argument("--exclude", action="append", default=[], dest="exclude_patterns")
 
     p_vaa = sub.add_parser("validate-artifact-archive")
     p_vaa.add_argument("zip_path")
@@ -1186,6 +1597,7 @@ def main() -> int:
 
     p_csf = sub.add_parser("compute-source-fingerprint")
     p_csf.add_argument("source_path")
+    p_csf.add_argument("--exclude", action="append", default=[], dest="exclude_patterns")
 
     p_pks = sub.add_parser("parse-kaggle-status")
     p_pks.add_argument("status_output")
@@ -1208,11 +1620,18 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "check-zip-cache":
-        return cmd_check_zip_cache(args.source_dir, args.output_zip)
+        return cmd_check_zip_cache(args.source_dir, args.output_zip, exclude_patterns=args.exclude_patterns)
     if args.command == "validate-artifact-archive":
         return cmd_validate_artifact_archive(args.zip_path, args.metadata_file, args.source_dir, level=args.level)
+    if args.command == "preflight-dataset":
+        return cmd_preflight_dataset(
+            args.source_dir,
+            report_path=args.report_path,
+            exclude_patterns=args.exclude_patterns,
+            quiet=args.quiet,
+        )
     if args.command == "compute-source-fingerprint":
-        return cmd_compute_source_fingerprint(args.source_path)
+        return cmd_compute_source_fingerprint(args.source_path, exclude_patterns=args.exclude_patterns)
     if args.command == "parse-kaggle-status":
         return cmd_parse_kaggle_status(args.status_output, args.exit_code)
     if args.command == "set-artifact-state":
@@ -1242,7 +1661,15 @@ def main() -> int:
     if args.command == "pack-wheelhouse-zip":
         return cmd_pack_wheelhouse_zip(args.source_dir, args.output_zip, args.zip_mode)
     if args.command == "pack-artifact-dir-zip":
-        return cmd_pack_artifact_dir_zip(args.source_dir, args.output_zip, args.zip_mode, force=args.force)
+        return cmd_pack_artifact_dir_zip(
+            args.source_dir,
+            args.output_zip,
+            args.zip_mode,
+            force=args.force,
+            exclude_patterns=args.exclude_patterns,
+            expected_fp=args.expected_fp,
+            report_path=args.report_path,
+        )
     if args.command == "extract-dataset-ref":
         return cmd_extract_dataset_ref(args.metadata_file)
     if args.command == "rewrite-dataset-owner":
@@ -1266,4 +1693,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1)

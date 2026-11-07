@@ -181,7 +181,11 @@ verify_kaggle_dataset_status() {
 
 compute_artifact_fingerprint() {
   local source_path="$1"
-  "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" compute-source-fingerprint "$source_path"
+  local cmd=("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" compute-source-fingerprint "$source_path")
+  for pat in "${EXCLUDE_PATTERNS[@]}"; do
+    cmd+=(--exclude "$pat")
+  done
+  "${cmd[@]}"
 }
 
 upload_single_artifact() {
@@ -200,9 +204,27 @@ upload_single_artifact() {
     return 1
   fi
 
+  # Preflight check for directory artifacts before expensive packing or network transfer
+  if [[ -d "$source_path" ]]; then
+    local preflight_cmd=("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" preflight-dataset "$source_path")
+    if [[ -n "$REPORT_PATH" ]]; then
+      preflight_cmd+=(--report "$REPORT_PATH")
+    fi
+    for pat in "${EXCLUDE_PATTERNS[@]}"; do
+      preflight_cmd+=(--exclude "$pat")
+    done
+    if ! "${preflight_cmd[@]}"; then
+      echo "Error: dataset preflight failed for artifact '$artifact_id'. Aborting upload." >&2
+      return 1
+    fi
+  fi
+
   # Compute current source fingerprint
   local current_source_fp
-  current_source_fp="$(compute_artifact_fingerprint "$source_path")"
+  if ! current_source_fp="$(compute_artifact_fingerprint "$source_path")" || [[ -z "$current_source_fp" ]]; then
+    echo "Error: failed to compute source fingerprint for '$source_path'." >&2
+    return 1
+  fi
 
   # Reconcile previously pending PROCESSING upload if exists
   local prev_state_json prev_status prev_source_fp
@@ -280,11 +302,17 @@ upload_single_artifact() {
   if [[ "$upload_status" -eq 0 ]]; then
     if [[ -d "$source_path" && "$DIR_MODE" == "zip" ]]; then
       local staged_zip_name="${item_name%.zip}.zip"
+      local check_cache_cmd=(
+        "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py"
+        check-zip-cache
+        "$source_path"
+        "$cache_file"
+      )
+      for pat in "${EXCLUDE_PATTERNS[@]}"; do
+        check_cache_cmd+=(--exclude "$pat")
+      done
       local cache_status
-      cache_status="$("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-        check-zip-cache \
-        "$source_path" \
-        "$cache_file" 2>/dev/null || echo "invalid")"
+      cache_status="$("${check_cache_cmd[@]}" 2>/dev/null || echo "invalid")"
 
       if [[ "$FORCE_UPLOAD" -eq 0 && "$cache_status" == "valid" ]]; then
         echo "Using cached zip for '$artifact_id'"
@@ -294,16 +322,24 @@ upload_single_artifact() {
         else
           echo "Creating zip cache for directory artifact '$artifact_id'..."
         fi
-        local force_args=()
-        if [[ "$FORCE_UPLOAD" -eq 1 ]]; then
-          force_args+=(--force)
+        local pack_cmd=(
+          "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py"
+          pack-artifact-dir-zip
+          "$source_path"
+          "$cache_file"
+          "$ARTIFACT_ZIP_MODE"
+          --expected-fp "$current_source_fp"
+        )
+        if [[ -n "$REPORT_PATH" ]]; then
+          pack_cmd+=(--report "$REPORT_PATH")
         fi
-        if ! "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" \
-          pack-artifact-dir-zip \
-          "$source_path" \
-          "$cache_file" \
-          "$ARTIFACT_ZIP_MODE" \
-          "${force_args[@]}"; then
+        for pat in "${EXCLUDE_PATTERNS[@]}"; do
+          pack_cmd+=(--exclude "$pat")
+        done
+        if [[ "$FORCE_UPLOAD" -eq 1 ]]; then
+          pack_cmd+=(--force)
+        fi
+        if ! "${pack_cmd[@]}"; then
           echo "Error: failed to zip directory artifact '$artifact_id'." >&2
           upload_status=1
         fi

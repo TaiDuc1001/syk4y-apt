@@ -16,6 +16,8 @@ kaggle_upload_parse_args() {
   DRY_RUN_OVERRIDE=0
   BUILD_WHEEL_ONLY=0
   WHEEL_ARCH_OVERRIDE=""
+  EXCLUDE_PATTERNS=()
+  REPORT_PATH=""
   ARTIFACT_FILTERS=()
   ARTIFACT_FILTER_IDS=()
 
@@ -81,6 +83,30 @@ kaggle_upload_parse_args() {
         echo "Warning: --wheel-arch is deprecated and will be removed in a future version. Use --arch instead." >&2
         WHEEL_ARCH_OVERRIDE="$2"
         shift 2
+        ;;
+      --exclude)
+        if [[ $# -lt 2 ]]; then
+          echo "Missing value for $1" >&2
+          exit 2
+        fi
+        EXCLUDE_PATTERNS+=("$2")
+        shift 2
+        ;;
+      --exclude=*)
+        EXCLUDE_PATTERNS+=("${1#*=}")
+        shift
+        ;;
+      --report)
+        if [[ $# -lt 2 ]]; then
+          echo "Missing value for $1" >&2
+          exit 2
+        fi
+        REPORT_PATH="$2"
+        shift 2
+        ;;
+      --report=*)
+        REPORT_PATH="${1#*=}"
+        shift
         ;;
       -h|--help)
         kaggle_upload_usage

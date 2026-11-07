@@ -58,6 +58,21 @@ kaggle_validate() (
     source_path="$(artifact_source_path "$artifact_id")"
     metadata_file="$(artifact_metadata_file "$artifact_id")"
 
+    if [[ -d "$source_path" ]]; then
+      local preflight_cmd=("$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/kaggle_upload_py_cli.py" preflight-dataset "$source_path")
+      if [[ -n "$REPORT_PATH" ]]; then
+        preflight_cmd+=(--report "$REPORT_PATH")
+      fi
+      for pat in "${EXCLUDE_PATTERNS[@]}"; do
+        preflight_cmd+=(--exclude "$pat")
+      done
+      if ! "${preflight_cmd[@]}"; then
+        echo "ERROR: Dataset preflight failed for '$artifact_id'." >&2
+        any_failed=1
+        continue
+      fi
+    fi
+
     if [[ "$artifact_id" == "wheelhouse" ]]; then
       archive_to_validate="$(artifact_source_path "wheelhouse")"
     else
