@@ -83,6 +83,29 @@ def _is_path_excluded(rel_path: str, name: str, exclude_patterns: list[str] | No
     return False
 
 
+SYSTEM_JUNK_NAMES = {
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+    "__MACOSX",
+    ".Spotlight-V100",
+    ".Trashes",
+}
+
+ARCHIVE_EXTENSIONS = (
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz2",
+    ".tar.xz",
+    ".txz",
+    ".7z",
+    ".rar",
+)
+
+
 def preflight_dataset(
     source_dir: Path,
     exclude_patterns: list[str] | None = None,
@@ -104,7 +127,13 @@ def preflight_dataset(
     external_symlinks = []   # list of {"link": str, "target": str, "reason": str}
     circular_symlinks = []   # list of {"link": str, "target": str, "reason": str}
     excluded_entries = []    # list of str (relative paths)
+    case_collisions = []     # list of {"path1": str, "path2": str}
+    archive_dir_collisions = [] # list of {"archive": str, "directory": str}
+    nested_archives = []     # list of str (relative paths)
+    system_junk_found = []   # list of str (relative paths)
 
+    seen_lower_paths = {}    # lower_rel -> norm_rel
+    all_dir_paths = set()    # norm_rel of all directories
     visited_dir_keys = set()
     dir_stack = []
 
@@ -145,6 +174,10 @@ def preflight_dataset(
 
             rel_path = f"{rel_prefix}/{name}" if rel_prefix else name
             norm_rel = _normalize_archive_relpath(rel_path)
+
+            if name in SYSTEM_JUNK_NAMES:
+                system_junk_found.append(norm_rel)
+                continue
 
             if _is_path_excluded(norm_rel, name, exclude_patterns, source_name=source_name):
                 excluded_entries.append(norm_rel)
@@ -222,24 +255,52 @@ def preflight_dataset(
 
                     if target_key and target_key not in visited_dir_keys:
                         total_dirs += 1
+                        all_dir_paths.add(norm_rel)
                         scan_dir(entry_path, norm_rel)
                 else:
                     total_files += 1
+                    norm_rel_lower = norm_rel.lower()
+                    if norm_rel_lower in seen_lower_paths and seen_lower_paths[norm_rel_lower] != norm_rel:
+                        case_collisions.append({"path1": seen_lower_paths[norm_rel_lower], "path2": norm_rel})
+                    else:
+                        seen_lower_paths[norm_rel_lower] = norm_rel
+                    if any(norm_rel_lower.endswith(ext) for ext in ARCHIVE_EXTENSIONS):
+                        nested_archives.append(norm_rel)
 
             elif entry.is_dir():
                 total_dirs += 1
+                all_dir_paths.add(norm_rel)
                 scan_dir(entry_path, norm_rel)
             else:
                 total_files += 1
+                norm_rel_lower = norm_rel.lower()
+                if norm_rel_lower in seen_lower_paths and seen_lower_paths[norm_rel_lower] != norm_rel:
+                    case_collisions.append({"path1": seen_lower_paths[norm_rel_lower], "path2": norm_rel})
+                else:
+                    seen_lower_paths[norm_rel_lower] = norm_rel
+                if any(norm_rel_lower.endswith(ext) for ext in ARCHIVE_EXTENSIONS):
+                    nested_archives.append(norm_rel)
 
         dir_stack.pop()
 
     scan_dir(source_dir, "")
 
+    # Check for archive-directory collisions (e.g. train.zip coexisting with train/ directory)
+    for arch in nested_archives:
+        stem = arch
+        for ext in sorted(ARCHIVE_EXTENSIONS, key=len, reverse=True):
+            if stem.lower().endswith(ext):
+                stem = stem[:-len(ext)]
+                break
+        if stem in all_dir_paths:
+            archive_dir_collisions.append({"archive": arch, "directory": stem})
+
     is_valid = (
         len(broken_symlinks) == 0
         and len(external_symlinks) == 0
         and len(circular_symlinks) == 0
+        and len(case_collisions) == 0
+        and len(archive_dir_collisions) == 0
     )
 
     report = {
@@ -256,10 +317,18 @@ def preflight_dataset(
             "external_symlinks_count": len(external_symlinks),
             "circular_symlinks_count": len(circular_symlinks),
             "excluded_count": len(excluded_entries),
+            "nested_archives_count": len(nested_archives),
+            "case_collisions_count": len(case_collisions),
+            "archive_dir_collisions_count": len(archive_dir_collisions),
+            "system_junk_count": len(system_junk_found),
         },
         "broken_symlinks": broken_symlinks,
         "external_symlinks": external_symlinks,
         "circular_symlinks": circular_symlinks,
+        "case_collisions": case_collisions,
+        "archive_dir_collisions": archive_dir_collisions,
+        "nested_archives": nested_archives,
+        "system_junk_found": system_junk_found,
         "excluded_entries": excluded_entries,
     }
 
@@ -288,6 +357,10 @@ def format_preflight_summary(report: dict) -> str:
         f"{summary['external_symlinks_count']} external, "
         f"{summary['circular_symlinks_count']} circular)"
     )
+    if summary.get("nested_archives_count", 0) > 0:
+        lines.append(f"  Nested Archives: {summary['nested_archives_count']} archive files found")
+    if summary.get("system_junk_count", 0) > 0:
+        lines.append(f"  System Junk: {summary['system_junk_count']} OS metadata files auto-omitted")
     if summary["excluded_count"] > 0:
         lines.append(f"  Excluded: {summary['excluded_count']} entries")
 
@@ -296,13 +369,35 @@ def format_preflight_summary(report: dict) -> str:
             return
         lines.append(f"\n{title} ({len(items)} found):")
         for item in items[:max_show]:
-            lines.append(f"  - {item['link']} -> {item['target']}")
+            if "link" in item:
+                lines.append(f"  - {item['link']} -> {item['target']}")
+            elif "path1" in item:
+                lines.append(f"  - {item['path1']} collides with {item['path2']}")
+            elif "archive" in item:
+                lines.append(f"  - {item['archive']} collides with directory {item['directory']}/")
         if len(items) > max_show:
             lines.append(f"  ... (and {len(items) - max_show} more)")
 
     format_representative(report["broken_symlinks"], "Broken / Dangling Symlinks")
     format_representative(report["external_symlinks"], "External / Escaping Symlinks")
     format_representative(report["circular_symlinks"], "Circular / Looping Symlinks")
+    format_representative(report.get("case_collisions", []), "Case-Insensitive Duplicate Paths (causes Kaggle extract collision)")
+    format_representative(report.get("archive_dir_collisions", []), "Archive vs Directory Collisions (causes 'Directory already exists' on Kaggle)")
+
+    if report.get("nested_archives"):
+        lines.append(f"\nNested Archives ({len(report['nested_archives'])} found):")
+        for na in report["nested_archives"][:5]:
+            lines.append(f"  - [ARCHIVE] {na}")
+        if len(report["nested_archives"]) > 5:
+            lines.append(f"  ... (and {len(report['nested_archives']) - 5} more)")
+        lines.append("  (Note: Kaggle will preserve these as files; ensure they do not collide with directories)")
+
+    if report.get("system_junk_found"):
+        lines.append(f"\nOS Metadata Auto-Excluded ({len(report['system_junk_found'])} items):")
+        for j in report["system_junk_found"][:5]:
+            lines.append(f"  - [CLEANED] {j}")
+        if len(report["system_junk_found"]) > 5:
+            lines.append(f"  ... (and {len(report['system_junk_found']) - 5} more)")
 
     if report["excluded_entries"]:
         lines.append(f"\nExcluded Entries ({len(report['excluded_entries'])}):")
@@ -312,11 +407,12 @@ def format_preflight_summary(report: dict) -> str:
             lines.append(f"  ... (and {len(report['excluded_entries']) - 5} more)")
 
     if not is_valid:
-        lines.append("\nError: Dataset preflight failed. Invalid symlinks would cause Kaggle ingestion failures.")
+        lines.append("\nError: Dataset preflight failed. Invalid symlinks or path collisions would cause Kaggle ingestion failures.")
         lines.append("To resolve:")
         lines.append("  1. Restore missing target files, or")
-        lines.append("  2. Explicitly exclude omitted subsets using --exclude '<pattern>', or")
-        lines.append("  3. Remove broken or external symlinks from the dataset.")
+        lines.append("  2. Rename case-colliding files or archive files coexisting with directories, or")
+        lines.append("  3. Explicitly exclude omitted subsets using --exclude '<pattern>', or")
+        lines.append("  4. Remove broken or external symlinks from the dataset.")
 
     return "\n".join(lines)
 
@@ -340,6 +436,7 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None, exclude_patter
     populated_dirs = set()  # set of norm_rel dir paths that contain files
     empty_dirs = set()  # set of norm_rel dir paths with no files
     seen_rel_paths = set()
+    seen_lower_paths = {}
 
     def walk_dir(current_dir: Path, rel_prefix: str):
         try:
@@ -363,7 +460,7 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None, exclude_patter
 
         for entry in entries:
             name = entry.name
-            if name in {".syk4y-temp", ".upload.lock"} or name.startswith(".syk4y-"):
+            if name in SYSTEM_JUNK_NAMES or name in {".syk4y-temp", ".upload.lock"} or name.startswith(".syk4y-"):
                 continue
 
             entry_path = Path(entry.path)
@@ -429,6 +526,14 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None, exclude_patter
                     raise ValueError(f"Duplicate archive path detected: {norm_rel!r}")
                 seen_rel_paths.add(norm_rel)
 
+                norm_lower = norm_rel.lower()
+                if norm_lower in seen_lower_paths and seen_lower_paths[norm_lower] != norm_rel:
+                    raise ValueError(
+                        f"Case-insensitive duplicate path detected: {norm_rel!r} collides with {seen_lower_paths[norm_lower]!r}. "
+                        f"This will cause extraction conflicts on Kaggle."
+                    )
+                seen_lower_paths[norm_lower] = norm_rel
+
                 all_files.append((entry_path, norm_rel, ext_attr, size))
                 has_child_file = True
 
@@ -445,10 +550,22 @@ def _safe_walk_artifact_dir(source_dir: Path, exclude_paths=None, exclude_patter
     # Prune any empty dirs that turned out to be ancestors of populated dirs
     pure_empty_dirs = {d for d in empty_dirs if d not in populated_dirs}
 
-    # Check for file/directory name collisions
+    # Check for file/directory name collisions and archive/directory collisions
     for _, norm_rel, _, _ in all_files:
         if norm_rel in populated_dirs or norm_rel in pure_empty_dirs:
             raise ValueError(f"File/directory collision: {norm_rel!r} is both a file and a directory prefix")
+
+        if any(norm_rel.lower().endswith(ext) for ext in ARCHIVE_EXTENSIONS):
+            stem = norm_rel
+            for ext in sorted(ARCHIVE_EXTENSIONS, key=len, reverse=True):
+                if stem.lower().endswith(ext):
+                    stem = stem[:-len(ext)]
+                    break
+            if stem in populated_dirs or stem in pure_empty_dirs:
+                raise ValueError(
+                    f"Archive/directory collision: archive '{norm_rel}' coexists with directory '{stem}'. "
+                    f"This will cause 'Directory already exists: {stem}' errors during Kaggle ingestion."
+                )
 
     return all_files, pure_empty_dirs
 
@@ -465,6 +582,7 @@ def validate_zip_archive(zip_path: Path, level: str = "full") -> dict:
         raise ValueError(f"Corrupt or invalid ZIP archive: {zip_path}")
 
     seen_names = set()
+    seen_lower_names = {}
     dir_entries = set()
     file_entries = set()
     populated_prefixes = set()
@@ -489,6 +607,16 @@ def validate_zip_archive(zip_path: Path, level: str = "full") -> dict:
 
             norm_name = _normalize_archive_relpath(raw_name)
 
+            # Check for system junk entries that crash Kaggle ingestion (e.g. __MACOSX)
+            for seg in norm_name.split("/"):
+                if seg in SYSTEM_JUNK_NAMES:
+                    raise ValueError(f"ZIP contains OS metadata/junk entry: {raw_name!r}. Clean hidden metadata before uploading to Kaggle.")
+
+            norm_lower = norm_name.lower()
+            if norm_lower in seen_lower_names and seen_lower_names[norm_lower] != raw_name:
+                raise ValueError(f"Case-insensitive duplicate entry in ZIP: {raw_name!r} collides with {seen_lower_names[norm_lower]!r}")
+            seen_lower_names[norm_lower] = raw_name
+
             if info.is_dir():
                 clean_dir = norm_name.rstrip("/")
                 dir_entries.add(clean_dir)
@@ -509,6 +637,20 @@ def validate_zip_archive(zip_path: Path, level: str = "full") -> dict:
                 f"Conflicting redundant directory entry declared for populated path: {sorted(redundant_dirs)}. "
                 f"Populated directories must not have separate directory entries to prevent Kaggle ingestion collision."
             )
+
+        # Check for archive vs directory collisions inside ZIP
+        for f in file_entries:
+            if any(f.lower().endswith(ext) for ext in ARCHIVE_EXTENSIONS):
+                stem = f
+                for ext in sorted(ARCHIVE_EXTENSIONS, key=len, reverse=True):
+                    if stem.lower().endswith(ext):
+                        stem = stem[:-len(ext)]
+                        break
+                if stem in dir_entries or stem in populated_prefixes:
+                    raise ValueError(
+                        f"Archive/directory collision in ZIP: archive '{f}' coexists with directory '{stem}'. "
+                        f"This will cause 'Directory already exists: {stem}' errors during Kaggle ingestion."
+                    )
 
     return {
         "level": level,

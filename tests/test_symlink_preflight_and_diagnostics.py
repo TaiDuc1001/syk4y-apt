@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -267,6 +268,84 @@ class SymlinkPreflightAndDiagnosticsTests(unittest.TestCase):
         self.assertNotEqual(p_pack.returncode, 0)
         self.assertIn("source dataset modified between fingerprinting and packaging", p_pack.stderr.lower())
         self.assertFalse(out_zip.exists())
+
+    def test_10_system_junk_auto_exclusion(self):
+        """OS metadata junk (.DS_Store, __MACOSX, Thumbs.db) is auto-omitted and reported."""
+        ds = self.create_yolo_dataset(self.tmp_path)
+        (ds / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+        (ds / "images" / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+        (ds / "Thumbs.db").write_bytes(b"\xD0\xCF\x11\xE0")
+        macosx_dir = ds / "__MACOSX"
+        macosx_dir.mkdir()
+        (macosx_dir / "._data.yaml").write_bytes(b"mac resource fork")
+
+        out_zip = self.tmp_path / "cleaned.zip"
+        p_pack = self.run_cmd([
+            sys.executable, str(PY_CLI),
+            "pack-artifact-dir-zip", str(ds), str(out_zip), "store"
+        ])
+        self.assertEqual(p_pack.returncode, 0, p_pack.stderr)
+        self.assertTrue(out_zip.is_file())
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            self.assertNotIn(".DS_Store", names)
+            self.assertNotIn("images/.DS_Store", names)
+            self.assertNotIn("Thumbs.db", names)
+            self.assertFalse(any("__MACOSX" in n for n in names))
+
+    def test_11_case_insensitive_duplicate_collision_detected(self):
+        """Case-insensitive duplicate file collision is caught and reported."""
+        # 1. Test validate-artifact-archive against a zip with case collisions
+        zip_path = self.tmp_path / "case_dup.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("data/train.csv", b"col1,col2\n")
+            zf.writestr("data/TRAIN.CSV", b"COL1,COL2\n")
+
+        meta_path = self.tmp_path / "dataset-metadata.json"
+        meta_path.write_text(json.dumps({"id": "user/dataset"}), encoding="utf-8")
+
+        p_val = self.run_cmd([
+            sys.executable, str(PY_CLI),
+            "validate-artifact-archive", str(zip_path), str(meta_path)
+        ])
+        self.assertNotEqual(p_val.returncode, 0)
+        self.assertIn("case-insensitive duplicate entry", p_val.stderr.lower())
+
+        # 2. Test pack-artifact-dir-zip if filesystem actually supports distinct case files
+        ds = self.create_yolo_dataset(self.tmp_path / "ds_case")
+        try:
+            (ds / "data.YAML").write_text("uppercase extension", encoding="utf-8")
+        except OSError:
+            return
+
+        # On case-sensitive filesystems (Linux ext4), both distinct entries will exist in iterdir:
+        matching = [f.name for f in ds.iterdir() if f.name.lower() == "data.yaml"]
+        if len(matching) > 1:
+            out_zip = self.tmp_path / "case_test.zip"
+            p_pack = self.run_cmd([
+                sys.executable, str(PY_CLI),
+                "pack-artifact-dir-zip", str(ds), str(out_zip), "store"
+            ])
+            self.assertNotEqual(p_pack.returncode, 0)
+            self.assertIn("case-insensitive", p_pack.stderr.lower())
+
+    def test_12_nested_archive_directory_collision_detected(self):
+        """Archive coexisting with directory of same stem (train.zip and train/) is caught."""
+        ds = self.create_yolo_dataset(self.tmp_path)
+        # Create a nested train.zip at dataset root while train/ is an existing directory
+        train_dir = ds / "train"
+        train_dir.mkdir(exist_ok=True)
+        (train_dir / "sample.txt").write_text("hello", encoding="utf-8")
+        (ds / "train.zip").write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty valid zip header
+
+        p_preflight = self.run_cmd([
+            sys.executable, str(PY_CLI),
+            "preflight-dataset", str(ds)
+        ])
+        self.assertNotEqual(p_preflight.returncode, 0)
+        self.assertIn("archive vs directory collision", p_preflight.stderr.lower())
+        self.assertIn("train.zip", p_preflight.stderr)
 
 
 if __name__ == "__main__":
