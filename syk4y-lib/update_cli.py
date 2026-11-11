@@ -25,15 +25,20 @@ def _run_git(args: list[str], cwd: Path, capture: bool = True) -> subprocess.Com
 
 def detect_install_type(install_dir: Path) -> str:
     """Detect whether syk4y is installed via git, APT, Homebrew, macOS pkg, or standalone."""
-    # 1. Git checkout (has .git or git worktree)
-    try:
-        p = _run_git(["rev-parse", "--is-inside-work-tree"], cwd=install_dir)
-        if p.returncode == 0 and p.stdout.strip() == "true":
-            return "git"
-    except OSError:
-        pass
-
     install_str = str(install_dir.resolve())
+
+    # 1. Homebrew check (Cellar, opt/homebrew/Cellar, linuxbrew, etc.)
+    if any(k in install_str for k in ("/Cellar/syk4y", "/Cellar/", "/linuxbrew/Cellar", "/opt/syk4y")):
+        return "homebrew"
+    if shutil.which("brew"):
+        try:
+            p_prefix = subprocess.run(["brew", "--prefix", "syk4y"], capture_output=True, text=True)
+            if p_prefix.returncode == 0 and p_prefix.stdout.strip():
+                brew_pkg_dir = str(Path(p_prefix.stdout.strip()).resolve())
+                if install_str.startswith(brew_pkg_dir):
+                    return "homebrew"
+        except OSError:
+            pass
 
     # 2. APT package
     if install_str.startswith("/usr/lib/syk4y"):
@@ -54,16 +59,15 @@ def detect_install_type(install_dir: Path) -> str:
     if install_str.startswith("/usr/local/lib/syk4y"):
         return "macos_pkg"
 
-    # 4. Homebrew
-    if any(k in install_str for k in ("/Cellar/syk4y", "/opt/syk4y", "/linuxbrew")):
-        return "homebrew"
-    if shutil.which("brew"):
+    # 4. Git checkout (MUST have .git directly in install_dir or immediate parent)
+    # Never allow rev-parse to climb up to /opt/homebrew or root!
+    if (install_dir / ".git").exists() or (install_dir.parent / ".git").exists():
         try:
-            p_prefix = subprocess.run(["brew", "--prefix", "syk4y"], capture_output=True, text=True)
-            if p_prefix.returncode == 0 and p_prefix.stdout.strip():
-                brew_pkg_dir = str(Path(p_prefix.stdout.strip()).resolve())
-                if install_str.startswith(brew_pkg_dir):
-                    return "homebrew"
+            p_top = _run_git(["rev-parse", "--show-toplevel"], cwd=install_dir)
+            if p_top.returncode == 0 and p_top.stdout.strip():
+                top_path = Path(p_top.stdout.strip()).resolve()
+                if top_path in (install_dir.resolve(), install_dir.parent.resolve()):
+                    return "git"
         except OSError:
             pass
 
