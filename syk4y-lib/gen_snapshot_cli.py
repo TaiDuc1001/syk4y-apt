@@ -1,4 +1,6 @@
+import argparse
 import base64
+import fnmatch
 import hashlib
 import io
 import json
@@ -9,7 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 FORMAT_VERSION = 2
 MANIFEST_VERSION = 1
@@ -28,6 +30,171 @@ MAX_SNAPSHOT_SCRIPT_BYTES = 1024 * 1024
 ANSI_YELLOW = "\033[33m"
 ANSI_RED = "\033[31m"
 ANSI_RESET = "\033[0m"
+
+DEFAULT_SNAPSHOT_IGNORE_PATTERNS = [
+    # VCS & tool internal directories
+    ".git/",
+    ".syk4y-temp/",
+    "kaggle_upload/",
+    ".hg/",
+    ".svn/",
+    # OS & editor artifacts
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+    "__MACOSX/",
+    ".idea/",
+    ".vscode/",
+    "*.swp",
+    "*.swo",
+    "*~",
+    # Python & runtime caches / virtualenvs
+    "__pycache__/",
+    "*.py[cod]",
+    "*$py.class",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    ".ipynb_checkpoints/",
+    ".coverage",
+    ".coverage.*",
+    "htmlcov/",
+    ".tox/",
+    ".nox/",
+    ".venv/",
+    "venv/",
+    "env/",
+    ".conda/",
+    "build/",
+    "dist/",
+    "*.egg-info/",
+    ".eggs/",
+    # ML/DL training checkpoints, weights & models
+    "*.pt",
+    "*.pth",
+    "*.bin",
+    "*.onnx",
+    "*.ckpt",
+    "*.safetensors",
+    "*.weights",
+    "*.pb",
+    "*.tflite",
+    "*.h5",
+    "*.hdf5",
+    "*.pkl",
+    "*.pickle",
+    "*.joblib",
+    "*.npy",
+    "*.npz",
+    # Tabular data & datasets (to be uploaded via syk4y kaggle upload instead)
+    "*.csv",
+    "*.tsv",
+    "*.parquet",
+    "*.feather",
+    "*.arrow",
+    "*.xlsx",
+    "*.xls",
+    # Database dumps & databases
+    "*.sqlite",
+    "*.sqlite3",
+    "*.db",
+    "*.rdb",
+    # Media & binary assets (images, audio, video, documents)
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.bmp",
+    "*.tiff",
+    "*.webp",
+    "*.ico",
+    "*.mp4",
+    "*.avi",
+    "*.mov",
+    "*.mkv",
+    "*.wav",
+    "*.mp3",
+    "*.flac",
+    "*.pdf",
+    # Compressed archives
+    "*.zip",
+    "*.tar",
+    "*.gz",
+    "*.tgz",
+    "*.bz2",
+    "*.xz",
+    "*.7z",
+    "*.rar",
+    # Logging, experiment tracking & run outputs
+    "*.log",
+    "*.tfevents*",
+    "events.out.tfevents.*",
+    "wandb/",
+    ".wandb/",
+    "runs/",
+    "mlruns/",
+    "lightning_logs/",
+    "checkpoints/",
+    "saved_models/",
+    # Research experiment evidence / audit folders (e.g. research/.../evidence/)
+    "evidence/",
+    "**/evidence/",
+    "**/evidence/**",
+]
+
+
+class IgnoreMatcher:
+    def __init__(
+        self,
+        use_default_patterns: bool = True,
+        syk4yignore_files: list[Path] | None = None,
+        cli_excludes: list[str] | None = None,
+    ):
+        self.rules: list[tuple[bool, str]] = []
+        if use_default_patterns:
+            for pat in DEFAULT_SNAPSHOT_IGNORE_PATTERNS:
+                self._add_rule(pat)
+
+        if syk4yignore_files:
+            for f in syk4yignore_files:
+                if f.is_file():
+                    for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                        self._add_rule(line)
+
+        if cli_excludes:
+            for pat in cli_excludes:
+                self._add_rule(pat)
+
+    def _add_rule(self, line: str) -> None:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            return
+        is_neg = line.startswith("!")
+        if is_neg:
+            line = line[1:].strip()
+        self.rules.append((is_neg, line))
+
+    def matches(self, rel_str: str) -> bool:
+        p = PurePosixPath(rel_str)
+        ignored = False
+        parts = p.parts
+        for is_neg, pat in self.rules:
+            is_dir_pat = pat.endswith("/")
+            pat_clean = pat.rstrip("/")
+            hit = False
+            if is_dir_pat:
+                if any(part == pat_clean or fnmatch.fnmatch(part, pat_clean) for part in parts[:-1]):
+                    hit = True
+                elif p.match(f"**/{pat_clean}/**") or p.match(f"{pat_clean}/**"):
+                    hit = True
+            else:
+                if "/" in pat:
+                    hit = p.match(pat) or p.match(f"**/{pat}")
+                else:
+                    hit = p.match(pat) or fnmatch.fnmatch(p.name, pat)
+            if hit:
+                ignored = not is_neg
+        return ignored
 
 
 def _color(text: str, ansi_color: str) -> str:
@@ -201,17 +368,37 @@ def _write_wrapped_b64(f, value: str) -> None:
     f.write(f"PAYLOAD_B64 = {value!r}\n\n")
 
 
-def main() -> int:
-    if len(sys.argv) != 4:
-        print(
-            "Usage: gen_snapshot_cli.py <repo_root> <out_abs> <template_dir>",
-            file=sys.stderr,
-        )
-        return 2
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate repository snapshot script.",
+        add_help=True,
+    )
+    parser.add_argument("repo_root", type=Path, help="Target repository root")
+    parser.add_argument("out_abs", type=Path, help="Output snapshot script path")
+    parser.add_argument("template_dir", type=Path, help="Template directory")
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="Exclude file/dir pattern from snapshot (repeatable)",
+    )
+    parser.add_argument(
+        "--no-default-ignore",
+        action="store_true",
+        help="Do not apply default snapshot ignore patterns",
+    )
+    return parser.parse_args(argv)
 
-    repo_root = Path(sys.argv[1]).resolve(strict=False)
-    out_abs = Path(sys.argv[2]).resolve(strict=False)
-    template_dir = Path(sys.argv[3]).resolve(strict=False)
+
+def main() -> int:
+    try:
+        args = parse_args(sys.argv[1:])
+    except SystemExit as exc:
+        return exc.code
+
+    repo_root = args.repo_root.resolve(strict=False)
+    out_abs = args.out_abs.resolve(strict=False)
+    template_dir = args.template_dir.resolve(strict=False)
     header_template = template_dir / "gen-full-header.py.tmpl"
 
     out_abs.parent.mkdir(parents=True, exist_ok=True)
@@ -223,6 +410,16 @@ def main() -> int:
         out_skip = out_abs.relative_to(repo_root).as_posix()
     except ValueError:
         out_skip = None
+
+    ignore_files = [
+        repo_root / ".syk4yignore",
+        repo_root / ".syk4y" / "ignore",
+    ]
+    matcher = IgnoreMatcher(
+        use_default_patterns=not args.no_default_ignore,
+        syk4yignore_files=ignore_files,
+        cli_excludes=args.exclude,
+    )
 
     raw_paths = subprocess.check_output(
         [
@@ -243,10 +440,15 @@ def main() -> int:
     entries = []
     file_count = 0
     link_count = 0
+    ignored_count = 0
     skipped_large_files = []
 
     for rel_path in paths:
         if out_skip and rel_path == out_skip:
+            continue
+
+        if matcher.matches(rel_path):
+            ignored_count += 1
             continue
 
         full_path = repo_root / rel_path
@@ -342,6 +544,8 @@ def main() -> int:
         print(f"Snapshot script unchanged: {out_abs}")
 
     print(f"Snapshot entries: files={file_count}, symlinks={link_count}")
+    if ignored_count:
+        print(f"Snapshot auto-ignored files: {ignored_count}")
     if skipped_large_files:
         print(f"Snapshot skipped large files: {len(skipped_large_files)}")
     print(

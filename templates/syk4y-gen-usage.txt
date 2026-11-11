@@ -15,4 +15,6 @@ Options:
   -u, --upload-dir DIR   Kaggle upload root directory (default: kaggle_upload)
   --arch ARCH            Target architecture for wheelhouse: native|x86_64|aarch64 (default: native)
   --wheel-arch ARCH      (Deprecated) Alias for --arch
+  --exclude PATTERN      Exclude file/dir pattern from snapshot (repeatable)
+  --no-default-ignore    Do not apply default snapshot ignore patterns
   -h, --help             Show this help

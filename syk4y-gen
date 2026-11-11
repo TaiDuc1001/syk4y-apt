@@ -32,6 +32,8 @@ REPO_ROOT_OVERRIDE=""
 SKIP_GEN=0
 SELECTED_ARTIFACTS=()
 WHEEL_ARCH="${WHEEL_ARCH:-}"
+GEN_EXCLUDES=()
+NO_DEFAULT_IGNORE=0
 
 usage() {
   cat "$TEMPLATE_DIR/syk4y-gen-usage.txt"
@@ -135,6 +137,18 @@ while [[ $# -gt 0 ]]; do
       WHEEL_ARCH="$2"
       shift 2
       ;;
+    --exclude)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      GEN_EXCLUDES+=("$2")
+      shift 2
+      ;;
+    --no-default-ignore)
+      NO_DEFAULT_IGNORE=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -232,7 +246,14 @@ if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
 fi
 
 if [[ "$SKIP_GEN" -eq 0 ]]; then
-  "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/gen_snapshot_cli.py" "$REPO_ROOT" "$OUT_ABS" "$TEMPLATE_DIR"
+  gen_cli_args=("$REPO_ROOT" "$OUT_ABS" "$TEMPLATE_DIR")
+  if [[ "$NO_DEFAULT_IGNORE" -eq 1 ]]; then
+    gen_cli_args+=(--no-default-ignore)
+  fi
+  for exc in "${GEN_EXCLUDES[@]}"; do
+    gen_cli_args+=(--exclude "$exc")
+  done
+  "$PYTHON_BIN" "$SCRIPT_DIR/syk4y-lib/gen_snapshot_cli.py" "${gen_cli_args[@]}"
 fi
 
 if [[ "${#SELECTED_ARTIFACTS[@]}" -gt 0 ]]; then
