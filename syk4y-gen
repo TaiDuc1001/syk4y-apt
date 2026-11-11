@@ -34,6 +34,8 @@ SELECTED_ARTIFACTS=()
 WHEEL_ARCH="${WHEEL_ARCH:-}"
 GEN_EXCLUDES=()
 NO_DEFAULT_IGNORE=0
+GEN_MAX_SIZE=""
+ALLOW_LARGE_SNAPSHOT=0
 
 usage() {
   cat "$TEMPLATE_DIR/syk4y-gen-usage.txt"
@@ -149,6 +151,18 @@ while [[ $# -gt 0 ]]; do
       NO_DEFAULT_IGNORE=1
       shift
       ;;
+    --max-size)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      GEN_MAX_SIZE="$2"
+      shift 2
+      ;;
+    --allow-large-snapshot)
+      ALLOW_LARGE_SNAPSHOT=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -249,6 +263,12 @@ if [[ "$SKIP_GEN" -eq 0 ]]; then
   gen_cli_args=("$REPO_ROOT" "$OUT_ABS" "$TEMPLATE_DIR")
   if [[ "$NO_DEFAULT_IGNORE" -eq 1 ]]; then
     gen_cli_args+=(--no-default-ignore)
+  fi
+  if [[ -n "$GEN_MAX_SIZE" ]]; then
+    gen_cli_args+=(--max-size "$GEN_MAX_SIZE")
+  fi
+  if [[ "$ALLOW_LARGE_SNAPSHOT" -eq 1 ]]; then
+    gen_cli_args+=(--allow-large-snapshot)
   fi
   for exc in "${GEN_EXCLUDES[@]}"; do
     gen_cli_args+=(--exclude "$exc")

@@ -140,6 +140,28 @@ DEFAULT_SNAPSHOT_IGNORE_PATTERNS = [
     "evidence/",
     "**/evidence/",
     "**/evidence/**",
+    # Documentation, planning, and design notes (not code needed for remote execution)
+    "docs/",
+    "doc/",
+    "documentation/",
+    ".planning/",
+    "planning/",
+    ".agent/",
+    "*.md",
+    "*.rst",
+    "!README.md",
+    "!README.rst",
+    "!README.txt",
+    # Package lockfiles (dependencies resolved by wheelhouse/pip)
+    "*.lock",
+    "package-lock.json",
+    # Tabular line files / streaming dataset & run records
+    "*.jsonl",
+    "*.ndjson",
+    # Experiment runs, trial catalogs & reports
+    "experiments/",
+    "reports/",
+    "report/",
 ]
 
 
@@ -368,6 +390,27 @@ def _write_wrapped_b64(f, value: str) -> None:
     f.write(f"PAYLOAD_B64 = {value!r}\n\n")
 
 
+def parse_bytes_limit(value: str | None, allow_large: bool) -> int:
+    if allow_large and not value:
+        return 10 * 1024 * 1024
+    if not value:
+        return MAX_SNAPSHOT_SCRIPT_BYTES
+    v = value.strip().upper()
+    multipliers = {
+        "K": 1024,
+        "KB": 1024,
+        "M": 1024 * 1024,
+        "MB": 1024 * 1024,
+        "G": 1024 * 1024 * 1024,
+        "GB": 1024 * 1024 * 1024,
+    }
+    for suffix, mult in multipliers.items():
+        if v.endswith(suffix):
+            num = v[: -len(suffix)].strip()
+            return int(float(num) * mult)
+    return int(v)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate repository snapshot script.",
@@ -386,6 +429,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-default-ignore",
         action="store_true",
         help="Do not apply default snapshot ignore patterns",
+    )
+    parser.add_argument(
+        "--max-size",
+        type=str,
+        default=None,
+        help="Maximum allowed snapshot script size (e.g. 2M, 5MB; default: 1MB)",
+    )
+    parser.add_argument(
+        "--allow-large-snapshot",
+        action="store_true",
+        help="Allow snapshot scripts larger than 1MB (sets limit to 10MB)",
     )
     return parser.parse_args(argv)
 
@@ -521,13 +575,15 @@ def main() -> int:
     os.chmod(tmp_name, 0o755)
     tmp_path = Path(tmp_name)
     snapshot_script_size = tmp_path.stat().st_size
-    if snapshot_script_size > MAX_SNAPSHOT_SCRIPT_BYTES:
+    max_script_size = parse_bytes_limit(args.max_size, args.allow_large_snapshot)
+    if snapshot_script_size > max_script_size:
         tmp_path.unlink()
         _error(
             "generated snapshot script is too large: "
             f"{out_abs} is {_format_bytes(snapshot_script_size)} "
-            f"> {_format_bytes(MAX_SNAPSHOT_SCRIPT_BYTES)}. "
-            "Move large assets to Kaggle artifacts instead of gen-full.py."
+            f"> {_format_bytes(max_script_size)}. "
+            "Use .syk4yignore or --exclude to omit extra directories/files, "
+            "move large assets to Kaggle artifacts, or pass --allow-large-snapshot."
         )
         return 1
 

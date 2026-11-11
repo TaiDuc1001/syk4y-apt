@@ -17,4 +17,6 @@ Options:
   --wheel-arch ARCH      (Deprecated) Alias for --arch
   --exclude PATTERN      Exclude file/dir pattern from snapshot (repeatable)
   --no-default-ignore    Do not apply default snapshot ignore patterns
+  --max-size BYTES       Maximum allowed snapshot script size (e.g. 2M, 5MB; default: 1MB)
+  --allow-large-snapshot Allow snapshot scripts larger than 1MB (sets limit to 10MB)
   -h, --help             Show this help

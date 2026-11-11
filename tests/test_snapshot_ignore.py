@@ -176,6 +176,25 @@ class SnapshotIgnoreTests(unittest.TestCase):
         self.assertTrue((restored_repo / "main.py").is_file())
         self.assertTrue((restored_repo / "data.csv").is_file(), "data.csv included because defaults disabled")
 
+    def test_max_size_and_allow_large_snapshot(self):
+        """CLI --max-size and --allow-large-snapshot allow custom size boundaries."""
+        (self.repo / "main.py").write_text("print('hello')\n" * 5000, encoding="utf-8")
+
+        # Exceeds artificially low max-size limit
+        res_fail = run_cmd(
+            [str(SYK4Y_GEN), "--repo-root", str(self.repo), "--max-size", "100"],
+            cwd=self.repo,
+        )
+        self.assertNotEqual(res_fail.returncode, 0)
+        self.assertIn("generated snapshot script is too large", res_fail.stderr)
+
+        # Passes with allow-large-snapshot
+        res_pass = run_cmd(
+            [str(SYK4Y_GEN), "--repo-root", str(self.repo), "--allow-large-snapshot"],
+            cwd=self.repo,
+        )
+        self.assertEqual(res_pass.returncode, 0, res_pass.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
